@@ -1,15 +1,13 @@
-﻿const WS_URL =
-  "ws://127.0.0.1:8788/extension";
-
-const HTTP_BASE =
-  "http://127.0.0.1:8788";
-
-const TEMP_URL =
-  "https://chatgpt.com/?temporary-chat=true&router-worker=1";
+﻿const WS_URL = "ws://127.0.0.1:8788/extension";
+const HTTP_BASE = "http://127.0.0.1:8788";
+const PARK_URL = chrome.runtime.getURL("worker.html");
+const TEMP_BASE = "https://chatgpt.com/?temporary-chat=true&router-worker=1";
+const IDLE_CLOSE_MS = 60000;
 
 let socket = null;
 let reconnectTimer = null;
 let keepAliveTimer = null;
+let idleCloseTimer = null;
 
 let workerTabId = null;
 let workerBusy = false;
@@ -18,43 +16,30 @@ let returnTabId = null;
 const pendingJobs = [];
 
 const sleep = ms =>
-  new Promise(resolve =>
-    setTimeout(resolve, ms)
-  );
+  new Promise(resolve => setTimeout(resolve, ms));
 
-async function loadWorkerState() {
-  const state =
-    await chrome.storage.local.get([
-      "workerTabId"
-    ]);
+function isWorkerUrl(value) {
+  if (!value) return false;
 
-  workerTabId =
-    state.workerTabId || null;
+  if (value === PARK_URL) {
+    return true;
+  }
 
-  if (workerTabId) {
-    try {
-      await chrome.tabs.get(
-        workerTabId
-      );
-    } catch {
-      workerTabId = null;
+  try {
+    const url = new URL(value);
 
-      await chrome.storage.local.remove(
-        "workerTabId"
-      );
-    }
+    return (
+      url.origin === "https://chatgpt.com" &&
+      url.searchParams.get("router-worker") === "1"
+    );
+  } catch {
+    return false;
   }
 }
 
-async function localFetch(
-  path,
-  options = {}
-) {
+async function localFetch(path, options = {}) {
   const response =
-    await fetch(
-      `${HTTP_BASE}${path}`,
-      options
-    );
+    await fetch(`${HTTP_BASE}${path}`, options);
 
   const data =
     await response.json();
@@ -69,142 +54,172 @@ async function localFetch(
   return data;
 }
 
-function connectSocket() {
-  if (
-    socket &&
-    (
-      socket.readyState ===
-        WebSocket.OPEN ||
-      socket.readyState ===
-        WebSocket.CONNECTING
-    )
-  ) {
-    return;
-  }
+async function reconcileWorkerTab() {
+  const stored =
+    await chrome.storage.local.get({
+      workerTabId: null
+    });
 
-  clearTimeout(
-    reconnectTimer
-  );
+  const tabs =
+    await chrome.tabs.query({});
 
-  try {
-    socket =
-      new WebSocket(WS_URL);
-  } catch {
-    scheduleReconnect();
-    return;
-  }
-
-  socket.onopen = () => {
-    console.log(
-      "[Router] Bridge connected"
+  const workers =
+    tabs.filter(tab =>
+      isWorkerUrl(
+        tab.url ||
+        tab.pendingUrl ||
+        ""
+      )
     );
 
-    clearInterval(
-      keepAliveTimer
-    );
+  let keep = null;
 
-    keepAliveTimer =
-      setInterval(
-        () => {
-          if (
-            socket?.readyState ===
-            WebSocket.OPEN
-          ) {
-            socket.send(
-              JSON.stringify({
-                type: "keepalive",
-                time: Date.now()
-              })
-            );
-          }
-        },
-        20000
-      );
-  };
+  if (stored.workerTabId) {
+    keep =
+      workers.find(
+        tab =>
+          tab.id === stored.workerTabId
+      ) || null;
+  }
 
-  socket.onmessage =
-    event => {
-      let message;
+  if (!keep && workers.length) {
+    keep = workers[0];
+  }
 
+  for (const tab of workers) {
+    if (
+      keep &&
+      tab.id &&
+      tab.id !== keep.id
+    ) {
       try {
-        message =
-          JSON.parse(
-            event.data
-          );
-      } catch {
-        return;
-      }
+        await chrome.tabs.remove(tab.id);
+      } catch {}
+    }
+  }
 
-      if (
-        message.type ===
-          "job" &&
-        message.job
-      ) {
-        pendingJobs.push(
-          message.job
-        );
+  if (keep?.id) {
+    workerTabId = keep.id;
 
-        void pumpQueue();
-      }
-    };
+    await chrome.storage.local.set({
+      workerTabId
+    });
 
-  socket.onclose = () => {
-    socket = null;
-
-    clearInterval(
-      keepAliveTimer
-    );
-
-    keepAliveTimer = null;
-
-    scheduleReconnect();
-  };
-
-  socket.onerror = () => {
     try {
-      socket.close();
+      await chrome.tabs.update(
+        workerTabId,
+        {
+          pinned: false
+        }
+      );
     } catch {}
-  };
-}
 
-function scheduleReconnect() {
-  clearTimeout(
-    reconnectTimer
+    return keep;
+  }
+
+  workerTabId = null;
+
+  await chrome.storage.local.remove(
+    "workerTabId"
   );
 
-  reconnectTimer =
-    setTimeout(
-      connectSocket,
-      1000
-    );
+  return null;
 }
 
 async function ensureWorkerTab() {
+  clearTimeout(idleCloseTimer);
+
   if (workerTabId) {
     try {
-      return await chrome.tabs.get(
-        workerTabId
-      );
-    } catch {
-      workerTabId = null;
-    }
+      const tab =
+        await chrome.tabs.get(workerTabId);
+
+      if (
+        isWorkerUrl(
+          tab.url ||
+          tab.pendingUrl ||
+          ""
+        )
+      ) {
+        return tab;
+      }
+    } catch {}
+
+    workerTabId = null;
+  }
+
+  const existing =
+    await reconcileWorkerTab();
+
+  if (existing) {
+    return existing;
   }
 
   const tab =
     await chrome.tabs.create({
-      url: "about:blank",
+      url: PARK_URL,
       active: false,
-      pinned: true
+      pinned: false
     });
 
-  workerTabId =
-    tab.id;
+  workerTabId = tab.id;
 
   await chrome.storage.local.set({
     workerTabId
   });
 
+  console.log(
+    "[Router] worker created",
+    workerTabId
+  );
+
   return tab;
+}
+
+async function rememberCurrentTab() {
+  try {
+    const tabs =
+      await chrome.tabs.query({
+        active: true,
+        lastFocusedWindow: true
+      });
+
+    const active = tabs[0];
+
+    if (
+      active?.id &&
+      active.id !== workerTabId
+    ) {
+      returnTabId = active.id;
+    }
+  } catch {}
+}
+
+async function restorePreviousTab() {
+  if (!returnTabId) return;
+
+  try {
+    const tab =
+      await chrome.tabs.get(returnTabId);
+
+    await chrome.tabs.update(
+      returnTabId,
+      {
+        active: true
+      }
+    );
+
+    if (tab.windowId) {
+      await chrome.windows.update(
+        tab.windowId,
+        {
+          focused: true
+        }
+      );
+    }
+  } catch {}
+
+  returnTabId = null;
 }
 
 async function waitForTabComplete(
@@ -212,13 +227,10 @@ async function waitForTabComplete(
   timeoutMs = 30000
 ) {
   try {
-    const current =
+    const tab =
       await chrome.tabs.get(tabId);
 
-    if (
-      current.status ===
-      "complete"
-    ) {
+    if (tab.status === "complete") {
       return;
     }
   } catch {}
@@ -226,35 +238,28 @@ async function waitForTabComplete(
   await new Promise(
     (resolve, reject) => {
       const timer =
-        setTimeout(
-          () => {
-            chrome.tabs.onUpdated.removeListener(
-              listener
-            );
+        setTimeout(() => {
+          chrome.tabs.onUpdated.removeListener(
+            listener
+          );
 
-            reject(
-              new Error(
-                "Worker tab load timeout."
-              )
-            );
-          },
-          timeoutMs
-        );
+          reject(
+            new Error(
+              "Worker tab load timeout."
+            )
+          );
+        }, timeoutMs);
 
       const listener =
         (
-          updatedTabId,
+          updatedId,
           changeInfo
         ) => {
           if (
-            updatedTabId ===
-              tabId &&
-            changeInfo.status ===
-              "complete"
+            updatedId === tabId &&
+            changeInfo.status === "complete"
           ) {
-            clearTimeout(
-              timer
-            );
+            clearTimeout(timer);
 
             chrome.tabs.onUpdated.removeListener(
               listener
@@ -279,7 +284,7 @@ async function sendToWorker(
 
   for (
     let attempt = 0;
-    attempt < 30;
+    attempt < 40;
     attempt++
   ) {
     try {
@@ -289,7 +294,6 @@ async function sendToWorker(
       );
     } catch (error) {
       lastError = error;
-
       await sleep(200);
     }
   }
@@ -302,69 +306,48 @@ async function sendToWorker(
   );
 }
 
-async function rememberReturnTab() {
-  try {
-    const tabs =
-      await chrome.tabs.query({
-        active: true,
-        lastFocusedWindow: true
-      });
-
-    const tab = tabs[0];
-
-    if (
-      tab?.id &&
-      tab.id !== workerTabId
-    ) {
-      returnTabId =
-        tab.id;
-    }
-  } catch {}
-}
-
-async function restoreUserTab() {
-  if (!returnTabId) {
+async function closeIdleWorker() {
+  if (
+    workerBusy ||
+    pendingJobs.length ||
+    !workerTabId
+  ) {
     return;
   }
 
+  const id = workerTabId;
+  workerTabId = null;
+
+  await chrome.storage.local.remove(
+    "workerTabId"
+  );
+
   try {
-    const tab =
-      await chrome.tabs.get(
-        returnTabId
-      );
-
-    await chrome.tabs.update(
-      returnTabId,
-      {
-        active: true
-      }
-    );
-
-    if (tab.windowId) {
-      await chrome.windows.update(
-        tab.windowId,
-        {
-          focused: true
-        }
-      );
-    }
+    await chrome.tabs.remove(id);
   } catch {}
 
-  returnTabId = null;
+  console.log(
+    "[Router] idle worker closed",
+    id
+  );
 }
 
 async function parkWorker() {
+  clearTimeout(idleCloseTimer);
+
   if (!workerTabId) {
     return;
   }
 
-  await restoreUserTab();
+  await restorePreviousTab();
 
   try {
     await chrome.tabs.update(
       workerTabId,
       {
-        url: "about:blank"
+        url: PARK_URL,
+        active: false,
+        pinned: false
       }
     );
 
@@ -373,33 +356,194 @@ async function parkWorker() {
       10000
     ).catch(() => {});
 
-    /*
-      Best-effort memory release while idle.
-      The same tab ID is reused for the
-      next job.
-    */
-    await chrome.tabs.discard(
+    await sleep(300);
+
+    const tab =
+      await chrome.tabs.get(workerTabId);
+
+    if (!tab.active) {
+      await chrome.tabs.discard(
+        workerTabId
+      ).catch(() => {});
+    }
+
+    console.log(
+      "[Router] worker parked",
       workerTabId
-    ).catch(() => {});
+    );
+
+    idleCloseTimer =
+      setTimeout(
+        () => {
+          void closeIdleWorker();
+        },
+        IDLE_CLOSE_MS
+      );
+  } catch (error) {
+    console.warn(
+      "[Router] park failed",
+      error
+    );
+  }
+}
+
+function connectSocket() {
+  if (
+    socket &&
+    (
+      socket.readyState === WebSocket.OPEN ||
+      socket.readyState === WebSocket.CONNECTING
+    )
+  ) {
+    return;
+  }
+
+  clearTimeout(reconnectTimer);
+
+  try {
+    socket =
+      new WebSocket(WS_URL);
+  } catch {
+    scheduleReconnect();
+    return;
+  }
+
+  socket.onopen = () => {
+    console.log(
+      "[Router] bridge connected"
+    );
+
+    clearInterval(
+      keepAliveTimer
+    );
+
+    keepAliveTimer =
+      setInterval(() => {
+        if (
+          socket?.readyState ===
+          WebSocket.OPEN
+        ) {
+          socket.send(
+            JSON.stringify({
+              type: "keepalive",
+              time: Date.now()
+            })
+          );
+        }
+      }, 20000);
+
+    void pumpQueue();
+  };
+
+  socket.onmessage = event => {
+    let message;
+
+    try {
+      message =
+        JSON.parse(event.data);
+    } catch {
+      return;
+    }
+
+    if (
+      message.type === "job" &&
+      message.job
+    ) {
+      if (
+        !pendingJobs.some(
+          job =>
+            job.id === message.job.id
+        )
+      ) {
+        pendingJobs.push(
+          message.job
+        );
+      }
+
+      void pumpQueue();
+    }
+  };
+
+  socket.onclose = () => {
+    socket = null;
+
+    clearInterval(
+      keepAliveTimer
+    );
+
+    keepAliveTimer = null;
+
+    scheduleReconnect();
+  };
+
+  socket.onerror = () => {
+    try {
+      socket.close();
+    } catch {}
+  };
+}
+
+function scheduleReconnect() {
+  clearTimeout(reconnectTimer);
+
+  reconnectTimer =
+    setTimeout(
+      connectSocket,
+      1000
+    );
+}
+
+async function reportJobError(
+  job,
+  error
+) {
+  try {
+    await localFetch(
+      `/internal/jobs/${encodeURIComponent(job.id)}/error`,
+      {
+        method: "POST",
+        headers: {
+          "content-type":
+            "application/json",
+          "x-router-job-token":
+            job.token
+        },
+        body: JSON.stringify({
+          error:
+            error.message ||
+            String(error)
+        })
+      }
+    );
   } catch {}
 }
 
 async function runBrowserJob(job) {
+  clearTimeout(idleCloseTimer);
+
   const tab =
     await ensureWorkerTab();
 
-  await rememberReturnTab();
+  await rememberCurrentTab();
 
-  await chrome.action.setBadgeText({
-    tabId: tab.id,
-    text: "..."
-  });
+  const url =
+    TEMP_BASE +
+    "&router-run=" +
+    encodeURIComponent(job.id);
+
+  console.log(
+    "[Router] reuse worker",
+    tab.id,
+    "job",
+    job.id
+  );
 
   await chrome.tabs.update(
     tab.id,
     {
-      url: TEMP_URL,
-      active: true
+      url,
+      active: true,
+      pinned: false
     }
   );
 
@@ -440,7 +584,7 @@ async function runBrowserJob(job) {
 async function pumpQueue() {
   if (
     workerBusy ||
-    !pendingJobs.length
+    pendingJobs.length === 0
   ) {
     return;
   }
@@ -451,32 +595,16 @@ async function pumpQueue() {
     pendingJobs.shift();
 
   try {
-    await runBrowserJob(
-      job
-    );
+    await runBrowserJob(job);
   } catch (error) {
-    try {
-      await localFetch(
-        `/internal/jobs/${encodeURIComponent(job.id)}/error`,
-        {
-          method: "POST",
-          headers: {
-            "content-type":
-              "application/json",
-            "x-router-job-token":
-              job.token
-          },
-          body: JSON.stringify({
-            error:
-              error.message
-          })
-        }
-      );
-    } catch {}
-
-    await parkWorker();
+    await reportJobError(
+      job,
+      error
+    );
 
     workerBusy = false;
+
+    await parkWorker();
 
     void pumpQueue();
   }
@@ -505,19 +633,18 @@ chrome.runtime.onMessage.addListener(
           }
         }
       )
-        .then(data =>
+        .then(data => {
           sendResponse({
             ok: true,
             data
-          })
-        )
-        .catch(error =>
+          });
+        })
+        .catch(error => {
           sendResponse({
             ok: false,
-            error:
-              error.message
-          })
-        );
+            error: error.message
+          });
+        });
 
       return true;
     }
@@ -542,46 +669,38 @@ chrome.runtime.onMessage.addListener(
           })
         }
       )
-        .then(
-          async data => {
-            if (tabId) {
-              await chrome.action.setBadgeText(
-                {
-                  tabId,
-                  text: "OK"
-                }
-              );
-            }
-
-            sendResponse({
-              ok: true,
-              data
+        .then(async data => {
+          if (tabId) {
+            await chrome.action.setBadgeText({
+              tabId,
+              text: "OK"
             });
-
-            await sleep(400);
-
-            await parkWorker();
-
-            workerBusy = false;
-
-            void pumpQueue();
           }
-        )
-        .catch(
-          async error => {
-            sendResponse({
-              ok: false,
-              error:
-                error.message
-            });
 
-            await parkWorker();
+          sendResponse({
+            ok: true,
+            data
+          });
 
-            workerBusy = false;
+          workerBusy = false;
 
-            void pumpQueue();
-          }
-        );
+          await sleep(250);
+          await parkWorker();
+
+          void pumpQueue();
+        })
+        .catch(async error => {
+          sendResponse({
+            ok: false,
+            error: error.message
+          });
+
+          workerBusy = false;
+
+          await parkWorker();
+
+          void pumpQueue();
+        });
 
       return true;
     }
@@ -590,45 +709,29 @@ chrome.runtime.onMessage.addListener(
       message?.type ===
       "MARK_ROUTER_JOB_ERROR"
     ) {
-      localFetch(
-        `/internal/jobs/${encodeURIComponent(message.id)}/error`,
-        {
-          method: "POST",
-          headers: {
-            "content-type":
-              "application/json",
-            "x-router-job-token":
-              message.token
-          },
-          body: JSON.stringify({
-            error:
-              message.error
-          })
-        }
+      const fakeJob = {
+        id: message.id,
+        token: message.token
+      };
+
+      reportJobError(
+        fakeJob,
+        new Error(
+          message.error ||
+          "Browser worker failed."
+        )
       )
-        .catch(() => {})
-        .finally(
-          async () => {
-            if (tabId) {
-              await chrome.action.setBadgeText(
-                {
-                  tabId,
-                  text: "!"
-                }
-              );
-            }
+        .finally(async () => {
+          sendResponse({
+            ok: true
+          });
 
-            sendResponse({
-              ok: true
-            });
+          workerBusy = false;
 
-            await parkWorker();
+          await parkWorker();
 
-            workerBusy = false;
-
-            void pumpQueue();
-          }
-        );
+          void pumpQueue();
+        });
 
       return true;
     }
@@ -638,27 +741,18 @@ chrome.runtime.onMessage.addListener(
 chrome.action.onClicked.addListener(
   async () => {
     connectSocket();
+
     const tab =
       await ensureWorkerTab();
 
     await chrome.tabs.update(
       tab.id,
       {
-        url: TEMP_URL,
-        active: true
+        url: TEMP_BASE,
+        active: true,
+        pinned: false
       }
     );
-
-    if (tab.windowId) {
-      try {
-        await chrome.windows.update(
-          tab.windowId,
-          {
-            focused: true
-          }
-        );
-      } catch {}
-    }
   }
 );
 
@@ -676,33 +770,46 @@ chrome.tabs.onRemoved.addListener(
   }
 );
 
-void loadWorkerState()
-  .finally(
-    connectSocket
-  );
-
-chrome.runtime.onInstalled.addListener(
-  connectSocket
-);
-
-chrome.runtime.onStartup.addListener(
-  connectSocket
-);
-
-chrome.alarms.onAlarm.addListener(alarm => {
-  if (alarm.name === "router-ws-reconnect") {
-    connectSocket();
+chrome.alarms.onAlarm.addListener(
+  alarm => {
+    if (
+      alarm.name ===
+      "router-ws-reconnect"
+    ) {
+      connectSocket();
+    }
   }
-});
+);
 
-async function ensureReconnectAlarm() {
+async function init() {
+  await reconcileWorkerTab();
+
+  if (workerTabId) {
+    await parkWorker();
+  }
+
   try {
     await chrome.alarms.create(
       "router-ws-reconnect",
-      { periodInMinutes: 0.5 }
+      {
+        periodInMinutes: 0.5
+      }
     );
   } catch {}
+
+  connectSocket();
 }
 
-void ensureReconnectAlarm();
+chrome.runtime.onInstalled.addListener(
+  () => {
+    void init();
+  }
+);
 
+chrome.runtime.onStartup.addListener(
+  () => {
+    void init();
+  }
+);
+
+void init();
