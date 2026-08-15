@@ -1,22 +1,10 @@
 ﻿(() => {
-  let lastUrl = location.href;
-  let attempting = false;
-  let completedForNavigation = false;
+  let running = false;
+  let done = false;
+  let currentUrl = location.href;
 
-  const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
-
-  function visible(el) {
-    if (!el) return false;
-    const rect = el.getBoundingClientRect();
-    const style = getComputedStyle(el);
-
-    return (
-      rect.width > 0 &&
-      rect.height > 0 &&
-      style.display !== "none" &&
-      style.visibility !== "hidden"
-    );
-  }
+  const sleep = ms =>
+    new Promise(resolve => setTimeout(resolve, ms));
 
   function normalize(value) {
     return (value || "")
@@ -25,51 +13,155 @@
       .toLowerCase();
   }
 
-  function label(el) {
+  function isVisible(element) {
+    if (!element) return false;
+
+    const rect = element.getBoundingClientRect();
+    const style = getComputedStyle(element);
+
+    return (
+      rect.width > 0 &&
+      rect.height > 0 &&
+      style.display !== "none" &&
+      style.visibility !== "hidden" &&
+      style.opacity !== "0"
+    );
+  }
+
+  function getLabel(element) {
     return normalize([
-      el.getAttribute?.("aria-label"),
-      el.getAttribute?.("title"),
-      el.textContent
+      element.getAttribute?.("aria-label"),
+      element.getAttribute?.("title"),
+      element.getAttribute?.("data-testid"),
+      element.textContent
     ].filter(Boolean).join(" "));
   }
 
   function clickableElements() {
     return [
       ...document.querySelectorAll(
-        'button,[role="button"],[role="menuitem"],[role="option"]'
+        [
+          "button",
+          "[role='button']",
+          "[role='menuitem']",
+          "[role='option']",
+          "a",
+          "[data-testid*='temporary' i]"
+        ].join(",")
       )
-    ].filter(visible);
+    ].filter(isVisible);
   }
 
-  function findByPatterns(patterns) {
-    return clickableElements().find(el => {
-      const text = label(el);
-      return patterns.some(pattern => pattern.test(text));
-    });
-  }
+  function isNewChat() {
+    const path =
+      location.pathname.replace(/\/+$/, "") || "/";
 
-  function isNewChatPage() {
-    const path = location.pathname.replace(/\/+$/, "") || "/";
     return path === "/";
   }
 
-  function appearsEnabled() {
-    return clickableElements().some(el => {
-      const text = label(el);
-      const pressed = el.getAttribute("aria-pressed");
-      const checked = el.getAttribute("aria-checked");
+  function temporaryAlreadyEnabled() {
+    return clickableElements().some(element => {
+      const label = getLabel(element);
 
       return (
-        /temporary/.test(text) &&
-        (
-          pressed === "true" ||
-          checked === "true" ||
-          /temporary chat on/.test(text) ||
-          /temporary enabled/.test(text) ||
-          /disable temporary/.test(text)
-        )
+        element.getAttribute("aria-pressed") === "true" &&
+        label.includes("temporary")
+      ) || (
+        element.getAttribute("aria-checked") === "true" &&
+        label.includes("temporary")
+      ) ||
+        /turn off temporary|disable temporary|temporary chat on|temporary enabled/.test(label);
+    });
+  }
+
+  function findTemporaryBySemanticLabel() {
+    const explicitSelectors = [
+      '[aria-label*="temporary" i]',
+      '[title*="temporary" i]',
+      '[data-testid*="temporary" i]'
+    ];
+
+    for (const selector of explicitSelectors) {
+      const candidate =
+        [...document.querySelectorAll(selector)]
+          .find(isVisible);
+
+      if (candidate) {
+        return (
+          candidate.closest(
+            "button,[role='button'],a"
+          ) || candidate
+        );
+      }
+    }
+
+    return clickableElements().find(element => {
+      const label = getLabel(element);
+
+      return (
+        /temporary chat/.test(label) ||
+        /^temporary$/.test(label) ||
+        /turn on temporary/.test(label) ||
+        /start temporary/.test(label) ||
+        /enable temporary/.test(label)
       );
     });
+  }
+
+  /*
+    Current ChatGPT UI can render Temporary as an icon-only control.
+
+    On New Chat, the Temporary control is in the upper-right area
+    of the ChatGPT document.
+
+    This fallback NEVER looks inside the sidebar and only considers
+    small clickable controls at the extreme upper-right of the page.
+  */
+  function findTemporaryByPosition() {
+    const candidates = clickableElements()
+      .map(element => ({
+        element,
+        rect: element.getBoundingClientRect(),
+        label: getLabel(element)
+      }))
+      .filter(({ rect, label }) => {
+        const rightSide =
+          rect.left > window.innerWidth - 180;
+
+        const topArea =
+          rect.top >= 0 &&
+          rect.top < 120;
+
+        const sensibleSize =
+          rect.width >= 20 &&
+          rect.width <= 120 &&
+          rect.height >= 20 &&
+          rect.height <= 80;
+
+        const clearlyWrong =
+          /profile|account|sidebar|share|close/.test(label);
+
+        return (
+          rightSide &&
+          topArea &&
+          sensibleSize &&
+          !clearlyWrong
+        );
+      });
+
+    candidates.sort((a, b) => {
+      const aDistance =
+        (window.innerWidth - a.rect.right) +
+        a.rect.top;
+
+      const bDistance =
+        (window.innerWidth - b.rect.right) +
+        b.rect.top;
+
+      return aDistance - bDistance;
+    });
+
+    return candidates[0]?.element || null;
   }
 
   async function report(type) {
@@ -78,129 +170,118 @@
     } catch {}
   }
 
-  async function enableTemporary() {
-    if (attempting || completedForNavigation || !isNewChatPage()) return;
+  async function clickTemporary() {
+    if (running || done || !isNewChat()) return;
 
-    const state = await chrome.storage.local.get({
-      autoTemporaryRequested: false
-    });
-
-    /*
-      Also auto-enable whenever the user manually reaches a fresh New Chat.
-      This satisfies the non-functional requirement that NEW CHAT defaults
-      to Temporary mode.
-    */
-    attempting = true;
+    running = true;
 
     try {
-      if (appearsEnabled()) {
-        completedForNavigation = true;
-        await report("TEMPORARY_OK");
-        return;
-      }
+      /*
+        Give the React app enough time to hydrate.
+      */
+      for (let attempt = 0; attempt < 30; attempt++) {
+        if (!isNewChat()) return;
 
-      for (let round = 0; round < 20; round++) {
-        let temporary = findByPatterns([
-          /^temporary$/,
-          /^temporary chat$/,
-          /start temporary chat/,
-          /enable temporary chat/,
-          /turn on temporary/,
-          /temporary mode/
-        ]);
-
-        if (temporary) {
-          temporary.click();
-          await sleep(500);
-
-          completedForNavigation = true;
+        if (temporaryAlreadyEnabled()) {
+          done = true;
           await report("TEMPORARY_OK");
           return;
         }
 
+        let target =
+          findTemporaryBySemanticLabel();
+
         /*
-          Some ChatGPT layouts place Temporary inside the model/mode menu.
+          Only use positional fallback after UI has had
+          some time to render.
         */
-        const picker = findByPatterns([
-          /model selector/,
-          /select model/,
-          /chat mode/,
-          /^chatgpt$/,
-          /^chatgpt \d/,
-          /choose model/
-        ]);
-
-        if (picker) {
-          picker.click();
-          await sleep(250);
-
-          temporary = findByPatterns([
-            /^temporary$/,
-            /^temporary chat$/,
-            /start temporary chat/,
-            /enable temporary chat/,
-            /turn on temporary/
-          ]);
-
-          if (temporary) {
-            temporary.click();
-            await sleep(500);
-
-            completedForNavigation = true;
-            await report("TEMPORARY_OK");
-            return;
-          }
-
-          document.dispatchEvent(
-            new KeyboardEvent("keydown", {
-              key: "Escape",
-              bubbles: true
-            })
-          );
+        if (!target && attempt >= 4) {
+          target =
+            findTemporaryByPosition();
         }
 
-        await sleep(300);
+        if (target) {
+          target.click();
+
+          await sleep(700);
+
+          done = true;
+          await report("TEMPORARY_OK");
+
+          console.log(
+            "[Auto Temporary] Temporary control clicked",
+            target
+          );
+
+          return;
+        }
+
+        await sleep(250);
       }
 
-      if (state.autoTemporaryRequested) {
-        await report("TEMPORARY_FAILED");
-      }
+      await report("TEMPORARY_FAILED");
+
+      console.warn(
+        "[Auto Temporary] Temporary control not found."
+      );
     } finally {
-      attempting = false;
+      running = false;
     }
   }
 
-  function navigationChanged() {
-    if (location.href !== lastUrl) {
-      lastUrl = location.href;
-      completedForNavigation = false;
+  function handleNavigation() {
+    if (location.href !== currentUrl) {
+      currentUrl = location.href;
+      done = false;
     }
 
-    void enableTemporary();
+    void clickTemporary();
   }
 
-  const observer = new MutationObserver(navigationChanged);
+  const observer =
+    new MutationObserver(handleNavigation);
 
   observer.observe(document.documentElement, {
     childList: true,
     subtree: true
   });
 
-  for (const method of ["pushState", "replaceState"]) {
+  for (const method of [
+    "pushState",
+    "replaceState"
+  ]) {
     const original = history[method];
 
     history[method] = function (...args) {
-      const result = original.apply(this, args);
+      const result =
+        original.apply(this, args);
 
-      queueMicrotask(navigationChanged);
+      queueMicrotask(handleNavigation);
 
       return result;
     };
   }
 
-  addEventListener("popstate", navigationChanged);
+  addEventListener(
+    "popstate",
+    handleNavigation
+  );
 
-  void enableTemporary();
-  setTimeout(() => void enableTemporary(), 700);
-  setTimeout(() => void enableTemporary(), 1500);
+  /*
+    Initial hydration retries.
+  */
+  setTimeout(
+    () => void clickTemporary(),
+    300
+  );
+
+  setTimeout(
+    () => void clickTemporary(),
+    1000
+  );
+
+  setTimeout(
+    () => void clickTemporary(),
+    2000
+  );
 })();
