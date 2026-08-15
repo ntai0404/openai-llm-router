@@ -3,6 +3,7 @@ const HTTP_BASE = "http://127.0.0.1:8788";
 const PARK_URL = chrome.runtime.getURL("worker.html");
 const TEMP_BASE = "https://chatgpt.com/?temporary-chat=true&router-worker=1";
 const IDLE_CLOSE_MS = 60000;
+const IDLE_ALARM = "router-idle-close";
 
 let socket = null;
 let reconnectTimer = null;
@@ -127,7 +128,7 @@ async function reconcileWorkerTab() {
 }
 
 async function ensureWorkerTab() {
-  clearTimeout(idleCloseTimer);
+  await chrome.alarms.clear(IDLE_ALARM).catch(() => {});
 
   if (workerTabId) {
     try {
@@ -307,33 +308,55 @@ async function sendToWorker(
 }
 
 async function closeIdleWorker() {
-  if (
-    workerBusy ||
-    pendingJobs.length ||
-    !workerTabId
-  ) {
+  if (workerBusy || pendingJobs.length) {
     return;
   }
 
-  const id = workerTabId;
-  workerTabId = null;
+  let id = workerTabId;
 
-  await chrome.storage.local.remove(
-    "workerTabId"
-  );
+  if (!id) {
+    const stored = await chrome.storage.local.get({
+      workerTabId: null
+    });
+
+    id = stored.workerTabId;
+  }
+
+  if (!id) {
+    return;
+  }
+
+  try {
+    const tab = await chrome.tabs.get(id);
+
+    if (tab.active) {
+      console.log("[Router] idle close skipped because worker is active", id);
+      return;
+    }
+  } catch {
+    if (workerTabId === id) {
+      workerTabId = null;
+    }
+
+    await chrome.storage.local.remove("workerTabId");
+    return;
+  }
+
+  if (workerTabId === id) {
+    workerTabId = null;
+  }
+
+  await chrome.storage.local.remove("workerTabId");
 
   try {
     await chrome.tabs.remove(id);
   } catch {}
 
-  console.log(
-    "[Router] idle worker closed",
-    id
-  );
+  console.log("[Router] idle worker closed", id);
 }
 
 async function parkWorker() {
-  clearTimeout(idleCloseTimer);
+  await chrome.alarms.clear(IDLE_ALARM).catch(() => {});
 
   if (!workerTabId) return;
 
@@ -348,9 +371,20 @@ async function parkWorker() {
 
     console.log("[Router] worker idle/discarded", workerTabId);
 
-    idleCloseTimer = setTimeout(() => {
-      void closeIdleWorker();
-    }, IDLE_CLOSE_MS);
+    await chrome.alarms.create(
+      IDLE_ALARM,
+      {
+        when: Date.now() + IDLE_CLOSE_MS
+      }
+    );
+
+    console.log(
+      "[Router] idle close scheduled",
+      workerTabId,
+      "in",
+      IDLE_CLOSE_MS,
+      "ms"
+    );
   } catch (error) {
     console.warn("[Router] park failed", error);
   }
@@ -488,7 +522,7 @@ async function reportJobError(
 }
 
 async function runBrowserJob(job) {
-  clearTimeout(idleCloseTimer);
+  await chrome.alarms.clear(IDLE_ALARM).catch(() => {});
 
   const tab = await ensureWorkerTab();
 
@@ -735,6 +769,11 @@ chrome.tabs.onRemoved.addListener(
 
 chrome.alarms.onAlarm.addListener(
   alarm => {
+    if (alarm.name === IDLE_ALARM) {
+      void closeIdleWorker();
+      return;
+    }
+
     if (
       alarm.name ===
       "router-ws-reconnect"
@@ -776,4 +815,5 @@ chrome.runtime.onStartup.addListener(
 );
 
 void init();
+
 
