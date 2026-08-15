@@ -1,32 +1,36 @@
 ﻿{
-  "manifest_version": 3,
-  "minimum_chrome_version": "116",
-  "name": "ChatGPT Auto Temporary Router",
-  "version": "1.8.0",
-  "description": "Reuses one resource-efficient ChatGPT Temporary Chat worker tab for queued local jobs.",
-  "permissions": [
-    "tabs",
-    "storage"
-  ],
-  "host_permissions": [
-    "https://chatgpt.com/*",
-    "http://127.0.0.1:8788/*"
-  ],
-  "background": {
-    "service_worker": "background.js"
-  },
-  "content_scripts": [
-    {
-      "matches": [
-        "https://chatgpt.com/*"
-      ],
-      "js": [
-        "content.js"
-      ],
-      "run_at": "document_idle"
-    }
-  ],
-  "action": {
-    "default_title": "ChatGPT Router Worker"
-  }
+    "manifest_version":  3,
+    "minimum_chrome_version":  "116",
+    "name":  "ChatGPT Auto Temporary Router",
+    "version":  "1.8.1",
+    "description":  "Reuses one resource-efficient ChatGPT Temporary Chat worker tab for queued local jobs.",
+    "permissions":  [
+                        "tabs",
+                        "storage",
+                        "alarms"
+                    ],
+    "host_permissions":  [
+                             "https://chatgpt.com/*",
+                             "http://127.0.0.1/*"
+                         ],
+    "background":  {
+                       "service_worker":  "background.js"
+                   },
+    "content_scripts":  [
+                            {
+                                "matches":  [
+                                                "https://chatgpt.com/*"
+                                            ],
+                                "js":  [
+                                           "content.js"
+                                       ],
+                                "run_at":  "document_idle"
+                            }
+                        ],
+    "action":  {
+                   "default_title":  "ChatGPT Router Worker"
+               },
+    "content_security_policy":  {
+                                    "extension_pages":  "script-src \u0027self\u0027; object-src \u0027self\u0027; connect-src \u0027self\u0027 http://127.0.0.1:* ws://127.0.0.1:*;"
+                                }
 }

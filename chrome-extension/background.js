@@ -635,8 +635,7 @@ chrome.runtime.onMessage.addListener(
   }
 );
 
-chrome.action.onClicked.addListener(
-  async () => {
+chrome.action.onClicked.addListener(`n  async () => {`n    connectSocket();
     const tab =
       await ensureWorkerTab();
 
@@ -687,3 +686,20 @@ chrome.runtime.onInstalled.addListener(
 chrome.runtime.onStartup.addListener(
   connectSocket
 );
+
+chrome.alarms.onAlarm.addListener(alarm => {
+  if (alarm.name === "router-ws-reconnect") {
+    connectSocket();
+  }
+});
+
+async function ensureReconnectAlarm() {
+  try {
+    await chrome.alarms.create(
+      "router-ws-reconnect",
+      { periodInMinutes: 0.5 }
+    );
+  } catch {}
+}
+
+void ensureReconnectAlarm();
