@@ -1,9 +1,13 @@
 ﻿{
   "manifest_version": 3,
+  "minimum_chrome_version": "116",
   "name": "ChatGPT Auto Temporary Router",
-  "version": "1.7.0",
-  "description": "Routes local prompts through a fresh ChatGPT Temporary Chat and returns rendered responses to the local bridge.",
-  "permissions": ["tabs"],
+  "version": "1.8.0",
+  "description": "Reuses one resource-efficient ChatGPT Temporary Chat worker tab for queued local jobs.",
+  "permissions": [
+    "tabs",
+    "storage"
+  ],
   "host_permissions": [
     "https://chatgpt.com/*",
     "http://127.0.0.1:8788/*"
@@ -13,12 +17,16 @@
   },
   "content_scripts": [
     {
-      "matches": ["https://chatgpt.com/*"],
-      "js": ["content.js"],
+      "matches": [
+        "https://chatgpt.com/*"
+      ],
+      "js": [
+        "content.js"
+      ],
       "run_at": "document_idle"
     }
   ],
   "action": {
-    "default_title": "Open New Temporary Chat"
+    "default_title": "ChatGPT Router Worker"
   }
 }

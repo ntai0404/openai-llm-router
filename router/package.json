@@ -1,4 +1,4 @@
-﻿{
+{
   "name": "codex-responses-router",
   "version": "1.0.0",
   "private": true,
@@ -10,5 +10,8 @@
     "start": "node --env-file=.env server.mjs",
     "check": "node --check server.mjs && node --check demo-browser-bridge.mjs",
     "demo": "node demo-browser-bridge.mjs"
+  },
+  "dependencies": {
+    "ws": "^8.21.3"
   }
 }

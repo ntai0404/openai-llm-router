@@ -1,12 +1,15 @@
 ﻿import http from "node:http";
 import crypto from "node:crypto";
-import fs from "node:fs";
-import { spawn } from "node:child_process";
+import { WebSocketServer, WebSocket } from "ws";
 
 const HOST = "127.0.0.1";
 const PORT = 8788;
-const RUN_TIMEOUT_MS = 180000;
+const RUN_TIMEOUT_MS = 300000;
+
 const jobs = new Map();
+
+let extensionSocket = null;
+let activeJobId = null;
 
 function json(res, status, value) {
   const body = JSON.stringify(value);
@@ -15,8 +18,10 @@ function json(res, status, value) {
     "content-type": "application/json; charset=utf-8",
     "content-length": Buffer.byteLength(body),
     "access-control-allow-origin": "*",
-    "access-control-allow-headers": "content-type,x-router-job-token",
-    "access-control-allow-methods": "GET,POST,OPTIONS"
+    "access-control-allow-headers":
+      "content-type,x-router-job-token",
+    "access-control-allow-methods":
+      "GET,POST,OPTIONS"
   });
 
   res.end(body);
@@ -36,7 +41,9 @@ async function readJson(req) {
     chunks.push(chunk);
   }
 
-  const raw = Buffer.concat(chunks).toString("utf8");
+  const raw =
+    Buffer.concat(chunks).toString("utf8");
+
   return raw ? JSON.parse(raw) : {};
 }
 
@@ -81,49 +88,11 @@ function extractText(input) {
   return parts.join("\n").trim();
 }
 
-function findChrome() {
-  const candidates = [
-    process.env.CHROME_PATH,
-    process.env.PROGRAMFILES &&
-      `${process.env.PROGRAMFILES}\\Google\\Chrome\\Application\\chrome.exe`,
-    process.env["PROGRAMFILES(X86)"] &&
-      `${process.env["PROGRAMFILES(X86)"]}\\Google\\Chrome\\Application\\chrome.exe`,
-    process.env.LOCALAPPDATA &&
-      `${process.env.LOCALAPPDATA}\\Google\\Chrome\\Application\\chrome.exe`
-  ].filter(Boolean);
-
-  return candidates.find(path => fs.existsSync(path));
-}
-
-function launchChrome(url) {
-  const chrome = findChrome();
-
-  if (!chrome) {
-    throw new Error("Chrome executable not found.");
-  }
-
-  const child = spawn(
-    chrome,
-    [url],
-    {
-      detached: true,
-      stdio: "ignore"
-    }
-  );
-
-  child.unref();
-}
-
-function authorized(req, job) {
-  return (
-    job &&
-    req.headers["x-router-job-token"] === job.token
-  );
-}
-
 function createJob(prompt) {
   const id = crypto.randomUUID();
-  const token = crypto.randomBytes(24).toString("hex");
+
+  const token =
+    crypto.randomBytes(24).toString("hex");
 
   const job = {
     id,
@@ -131,6 +100,7 @@ function createJob(prompt) {
     prompt,
     status: "queued",
     createdAt: Date.now(),
+    dispatchedAt: null,
     sentAt: null,
     completedAt: null,
     response: null,
@@ -139,35 +109,86 @@ function createJob(prompt) {
 
   jobs.set(id, job);
 
-  const url =
-    "https://chatgpt.com/?" +
-    new URLSearchParams({
-      "temporary-chat": "true",
-      "router-demo": "1",
-      "router-job": id,
-      "router-token": token
-    }).toString();
-
-  try {
-    launchChrome(url);
-    job.status = "browser_opened";
-  } catch (error) {
-    job.status = "error";
-    job.error = error.message;
-  }
+  dispatchNext();
 
   return job;
 }
 
-async function waitForJob(job, timeoutMs = RUN_TIMEOUT_MS) {
+function queuedJobs() {
+  return [...jobs.values()]
+    .filter(job => job.status === "queued")
+    .sort((a, b) => a.createdAt - b.createdAt);
+}
+
+function dispatchNext() {
+  if (
+    activeJobId ||
+    !extensionSocket ||
+    extensionSocket.readyState !== WebSocket.OPEN
+  ) {
+    return;
+  }
+
+  const job = queuedJobs()[0];
+
+  if (!job) return;
+
+  activeJobId = job.id;
+  job.status = "dispatched";
+  job.dispatchedAt = Date.now();
+
+  try {
+    extensionSocket.send(
+      JSON.stringify({
+        type: "job",
+        job: {
+          id: job.id,
+          token: job.token,
+          prompt: job.prompt
+        }
+      })
+    );
+  } catch (error) {
+    job.status = "queued";
+    job.dispatchedAt = null;
+    activeJobId = null;
+
+    console.error(
+      "Unable to dispatch job:",
+      error
+    );
+  }
+}
+
+function releaseJob(job) {
+  if (activeJobId === job.id) {
+    activeJobId = null;
+  }
+
+  queueMicrotask(dispatchNext);
+}
+
+function authorized(req, job) {
+  return (
+    job &&
+    req.headers["x-router-job-token"] ===
+      job.token
+  );
+}
+
+async function waitForJob(
+  job,
+  timeoutMs = RUN_TIMEOUT_MS
+) {
   const started = Date.now();
 
-  while (Date.now() - started < timeoutMs) {
-    if (job.status === "completed") {
-      return job;
-    }
-
-    if (job.status === "error") {
+  while (
+    Date.now() - started < timeoutMs
+  ) {
+    if (
+      job.status === "completed" ||
+      job.status === "error"
+    ) {
       return job;
     }
 
@@ -176,15 +197,26 @@ async function waitForJob(job, timeoutMs = RUN_TIMEOUT_MS) {
     );
   }
 
-  job.status = "error";
-  job.error = `Timed out after ${timeoutMs}ms`;
+  if (
+    job.status !== "completed" &&
+    job.status !== "error"
+  ) {
+    job.status = "error";
+    job.error =
+      `Timed out after ${timeoutMs}ms`;
+
+    releaseJob(job);
+  }
 
   return job;
 }
 
 async function parsePrompt(req) {
   const body = await readJson(req);
-  return extractText(body.input ?? body.prompt);
+
+  return extractText(
+    body.input ?? body.prompt
+  );
 }
 
 setInterval(() => {
@@ -192,366 +224,428 @@ setInterval(() => {
     Date.now() - 30 * 60 * 1000;
 
   for (const [id, job] of jobs) {
-    if (job.createdAt < cutoff) {
+    if (
+      job.createdAt < cutoff &&
+      id !== activeJobId
+    ) {
       jobs.delete(id);
     }
   }
 }, 60000).unref();
 
 const server =
-  http.createServer(async (req, res) => {
-    if (req.method === "OPTIONS") {
-      res.writeHead(204, {
-        "access-control-allow-origin": "*",
-        "access-control-allow-headers":
-          "content-type,x-router-job-token",
-        "access-control-allow-methods":
-          "GET,POST,OPTIONS"
-      });
-
-      return res.end();
-    }
-
-    if (
-      req.method === "GET" &&
-      req.url === "/health"
-    ) {
-      return json(res, 200, {
-        ok: true,
-        service: "chatgpt-browser-demo-bridge",
-        port: PORT
-      });
-    }
-
-    /*
-      One-request synchronous demo endpoint.
-
-      POST /demo/run
-      {"input":"Hello"}
-
-      Waits until the browser job completes and then
-      returns the captured output.
-    */
-    if (
-      req.method === "POST" &&
-      req.url === "/demo/run"
-    ) {
-      let prompt;
-
-      try {
-        prompt = await parsePrompt(req);
-      } catch (error) {
-        return json(res, 400, {
-          ok: false,
-          error: error.message
+  http.createServer(
+    async (req, res) => {
+      if (req.method === "OPTIONS") {
+        res.writeHead(204, {
+          "access-control-allow-origin": "*",
+          "access-control-allow-headers":
+            "content-type,x-router-job-token",
+          "access-control-allow-methods":
+            "GET,POST,OPTIONS"
         });
+
+        return res.end();
       }
 
-      if (!prompt) {
-        return json(res, 400, {
-          ok: false,
-          error: "Prompt is required."
-        });
-      }
-
-      const job = createJob(prompt);
-
-      if (job.status === "error") {
-        return json(res, 500, {
-          ok: false,
-          job_id: job.id,
-          status: job.status,
-          error: job.error
-        });
-      }
-
-      await waitForJob(job);
-
-      if (job.status === "completed") {
+      if (
+        req.method === "GET" &&
+        req.url === "/health"
+      ) {
         return json(res, 200, {
           ok: true,
-          job_id: job.id,
-          status: "completed",
-          output_text: job.response
-        });
-      }
-
-      return json(res, 504, {
-        ok: false,
-        job_id: job.id,
-        status: job.status,
-        error: job.error
-      });
-    }
-
-    /*
-      Existing asynchronous endpoint.
-    */
-    if (
-      req.method === "POST" &&
-      req.url === "/demo/submit"
-    ) {
-      let prompt;
-
-      try {
-        prompt = await parsePrompt(req);
-      } catch (error) {
-        return json(res, 400, {
-          ok: false,
-          error: error.message
-        });
-      }
-
-      if (!prompt) {
-        return json(res, 400, {
-          ok: false,
-          error: "Prompt is required."
-        });
-      }
-
-      const job = createJob(prompt);
-
-      if (job.status === "error") {
-        return json(res, 500, {
-          ok: false,
-          job_id: job.id,
-          error: job.error
-        });
-      }
-
-      return json(res, 202, {
-        ok: true,
-        job_id: job.id,
-        status: job.status,
-        status_url: `/demo/status/${job.id}`
-      });
-    }
-
-    let match =
-      /^\/demo\/status\/([0-9a-f-]+)$/.exec(
-        req.url || ""
-      );
-
-    if (
-      req.method === "GET" &&
-      match
-    ) {
-      const job = jobs.get(match[1]);
-
-      if (!job) {
-        return json(res, 404, {
-          ok: false,
-          error: "Job not found."
-        });
-      }
-
-      return json(res, 200, {
-        ok: true,
-        job_id: job.id,
-        status: job.status,
-        response: job.response,
-        error: job.error,
-        created_at: job.createdAt,
-        sent_at: job.sentAt,
-        completed_at: job.completedAt
-      });
-    }
-
-    match =
-      /^\/demo\/result\/([0-9a-f-]+)$/.exec(
-        req.url || ""
-      );
-
-    if (
-      req.method === "GET" &&
-      match
-    ) {
-      const job = jobs.get(match[1]);
-
-      if (!job) {
-        return json(res, 404, {
-          ok: false,
-          error: "Job not found."
-        });
-      }
-
-      if (job.status !== "completed") {
-        return json(res, 202, {
-          ok: true,
-          job_id: job.id,
-          status: job.status,
-          error: job.error
-        });
-      }
-
-      return json(res, 200, {
-        ok: true,
-        job_id: job.id,
-        status: "completed",
-        response: job.response
-      });
-    }
-
-    match =
-      /^\/internal\/jobs\/([0-9a-f-]+)$/.exec(
-        req.url || ""
-      );
-
-    if (
-      req.method === "GET" &&
-      match
-    ) {
-      const job = jobs.get(match[1]);
-
-      if (!authorized(req, job)) {
-        return json(res, 404, {
-          ok: false,
-          error: "Job not found."
-        });
-      }
-
-      return json(res, 200, {
-        ok: true,
-        job_id: job.id,
-        prompt: job.prompt,
-        status: job.status
-      });
-    }
-
-    match =
-      /^\/internal\/jobs\/([0-9a-f-]+)\/sent$/.exec(
-        req.url || ""
-      );
-
-    if (
-      req.method === "POST" &&
-      match
-    ) {
-      const job = jobs.get(match[1]);
-
-      if (!authorized(req, job)) {
-        return json(res, 404, {
-          ok: false,
-          error: "Job not found."
-        });
-      }
-
-      job.status = "waiting_response";
-      job.sentAt = Date.now();
-
-      return json(res, 200, {
-        ok: true,
-        status: job.status
-      });
-    }
-
-    match =
-      /^\/internal\/jobs\/([0-9a-f-]+)\/result$/.exec(
-        req.url || ""
-      );
-
-    if (
-      req.method === "POST" &&
-      match
-    ) {
-      const job = jobs.get(match[1]);
-
-      if (!authorized(req, job)) {
-        return json(res, 404, {
-          ok: false,
-          error: "Job not found."
-        });
-      }
-
-      let body;
-
-      try {
-        body = await readJson(req);
-      } catch (error) {
-        return json(res, 400, {
-          ok: false,
-          error: error.message
+          service:
+            "chatgpt-browser-demo-bridge",
+          port: PORT,
+          extension_connected:
+            !!extensionSocket &&
+            extensionSocket.readyState ===
+              WebSocket.OPEN,
+          worker_busy: !!activeJobId,
+          active_job_id: activeJobId,
+          queued_jobs:
+            queuedJobs().length
         });
       }
 
       if (
-        typeof body.response !== "string" ||
-        !body.response.trim()
+        req.method === "POST" &&
+        req.url === "/demo/run"
       ) {
-        return json(res, 400, {
+        let prompt;
+
+        try {
+          prompt =
+            await parsePrompt(req);
+        } catch (error) {
+          return json(res, 400, {
+            ok: false,
+            error: error.message
+          });
+        }
+
+        if (!prompt) {
+          return json(res, 400, {
+            ok: false,
+            error: "Prompt is required."
+          });
+        }
+
+        const job =
+          createJob(prompt);
+
+        await waitForJob(job);
+
+        if (
+          job.status === "completed"
+        ) {
+          return json(res, 200, {
+            ok: true,
+            job_id: job.id,
+            status: "completed",
+            output_text: job.response
+          });
+        }
+
+        return json(res, 504, {
           ok: false,
-          error: "Response text is required."
+          job_id: job.id,
+          status: job.status,
+          error: job.error
         });
       }
 
-      job.response = body.response;
-      job.status = "completed";
-      job.completedAt = Date.now();
+      if (
+        req.method === "POST" &&
+        req.url === "/demo/submit"
+      ) {
+        let prompt;
 
-      console.log(
-        `Job ${job.id} completed (${job.response.length} chars)`
-      );
+        try {
+          prompt =
+            await parsePrompt(req);
+        } catch (error) {
+          return json(res, 400, {
+            ok: false,
+            error: error.message
+          });
+        }
 
-      return json(res, 200, {
-        ok: true,
-        job_id: job.id,
-        status: "completed"
-      });
-    }
+        if (!prompt) {
+          return json(res, 400, {
+            ok: false,
+            error: "Prompt is required."
+          });
+        }
 
-    match =
-      /^\/internal\/jobs\/([0-9a-f-]+)\/error$/.exec(
-        req.url || ""
-      );
+        const job =
+          createJob(prompt);
 
-    if (
-      req.method === "POST" &&
-      match
-    ) {
-      const job = jobs.get(match[1]);
-
-      if (!authorized(req, job)) {
-        return json(res, 404, {
-          ok: false,
-          error: "Job not found."
+        return json(res, 202, {
+          ok: true,
+          job_id: job.id,
+          status: job.status,
+          status_url:
+            `/demo/status/${job.id}`
         });
       }
 
-      let body = {};
-
-      try {
-        body = await readJson(req);
-      } catch {}
-
-      job.status = "error";
-      job.error =
-        String(
-          body.error ||
-          "Browser automation failed."
+      let match =
+        /^\/demo\/status\/([0-9a-f-]+)$/.exec(
+          req.url || ""
         );
 
-      return json(res, 200, {
-        ok: true,
-        status: "error"
+      if (
+        req.method === "GET" &&
+        match
+      ) {
+        const job =
+          jobs.get(match[1]);
+
+        if (!job) {
+          return json(res, 404, {
+            ok: false,
+            error: "Job not found."
+          });
+        }
+
+        return json(res, 200, {
+          ok: true,
+          job_id: job.id,
+          status: job.status,
+          response: job.response,
+          error: job.error,
+          queued_jobs:
+            queuedJobs().length
+        });
+      }
+
+      match =
+        /^\/internal\/jobs\/([0-9a-f-]+)\/sent$/.exec(
+          req.url || ""
+        );
+
+      if (
+        req.method === "POST" &&
+        match
+      ) {
+        const job =
+          jobs.get(match[1]);
+
+        if (!authorized(req, job)) {
+          return json(res, 404, {
+            ok: false,
+            error: "Job not found."
+          });
+        }
+
+        job.status =
+          "waiting_response";
+
+        job.sentAt =
+          Date.now();
+
+        return json(res, 200, {
+          ok: true,
+          status: job.status
+        });
+      }
+
+      match =
+        /^\/internal\/jobs\/([0-9a-f-]+)\/result$/.exec(
+          req.url || ""
+        );
+
+      if (
+        req.method === "POST" &&
+        match
+      ) {
+        const job =
+          jobs.get(match[1]);
+
+        if (!authorized(req, job)) {
+          return json(res, 404, {
+            ok: false,
+            error: "Job not found."
+          });
+        }
+
+        let body;
+
+        try {
+          body =
+            await readJson(req);
+        } catch (error) {
+          return json(res, 400, {
+            ok: false,
+            error: error.message
+          });
+        }
+
+        if (
+          typeof body.response !==
+            "string" ||
+          !body.response.trim()
+        ) {
+          return json(res, 400, {
+            ok: false,
+            error:
+              "Response text is required."
+          });
+        }
+
+        job.response =
+          body.response;
+
+        job.status =
+          "completed";
+
+        job.completedAt =
+          Date.now();
+
+        releaseJob(job);
+
+        console.log(
+          `Completed ${job.id} (${job.response.length} chars)`
+        );
+
+        return json(res, 200, {
+          ok: true,
+          job_id: job.id,
+          status: "completed"
+        });
+      }
+
+      match =
+        /^\/internal\/jobs\/([0-9a-f-]+)\/error$/.exec(
+          req.url || ""
+        );
+
+      if (
+        req.method === "POST" &&
+        match
+      ) {
+        const job =
+          jobs.get(match[1]);
+
+        if (!authorized(req, job)) {
+          return json(res, 404, {
+            ok: false,
+            error: "Job not found."
+          });
+        }
+
+        let body = {};
+
+        try {
+          body =
+            await readJson(req);
+        } catch {}
+
+        job.status = "error";
+
+        job.error =
+          String(
+            body.error ||
+            "Browser worker failed."
+          );
+
+        releaseJob(job);
+
+        return json(res, 200, {
+          ok: true,
+          status: "error"
+        });
+      }
+
+      return json(res, 404, {
+        ok: false,
+        error: "Not found."
       });
     }
+  );
 
-    return json(res, 404, {
-      ok: false,
-      error: "Not found."
-    });
+const wss =
+  new WebSocketServer({
+    server,
+    path: "/extension"
   });
 
-server.listen(PORT, HOST, () => {
-  console.log(
-    `Browser bridge: http://${HOST}:${PORT}`
-  );
+wss.on(
+  "connection",
+  (socket, request) => {
+    const origin =
+      request.headers.origin || "";
 
-  console.log(
-    "POST /demo/run     synchronous"
-  );
+    if (
+      origin &&
+      !origin.startsWith(
+        "chrome-extension://"
+      )
+    ) {
+      socket.close(
+        1008,
+        "Extension only"
+      );
 
-  console.log(
-    "POST /demo/submit  asynchronous"
-  );
-});
+      return;
+    }
+
+    if (
+      extensionSocket &&
+      extensionSocket !== socket
+    ) {
+      try {
+        extensionSocket.close();
+      } catch {}
+    }
+
+    extensionSocket = socket;
+
+    console.log(
+      "Chrome extension connected"
+    );
+
+    socket.on(
+      "message",
+      data => {
+        let message;
+
+        try {
+          message =
+            JSON.parse(
+              data.toString()
+            );
+        } catch {
+          return;
+        }
+
+        if (
+          message.type ===
+          "keepalive"
+        ) {
+          try {
+            socket.send(
+              JSON.stringify({
+                type: "keepalive_ack",
+                time: Date.now()
+              })
+            );
+          } catch {}
+        }
+      }
+    );
+
+    socket.on(
+      "close",
+      () => {
+        if (
+          extensionSocket === socket
+        ) {
+          extensionSocket = null;
+        }
+
+        if (activeJobId) {
+          const job =
+            jobs.get(activeJobId);
+
+          if (
+            job &&
+            ![
+              "completed",
+              "error"
+            ].includes(job.status)
+          ) {
+            job.status =
+              "queued";
+
+            job.dispatchedAt =
+              null;
+          }
+
+          activeJobId = null;
+        }
+
+        console.log(
+          "Chrome extension disconnected"
+        );
+      }
+    );
+
+    dispatchNext();
+  }
+);
+
+server.listen(
+  PORT,
+  HOST,
+  () => {
+    console.log(
+      `Browser bridge: http://${HOST}:${PORT}`
+    );
+
+    console.log(
+      `Extension socket: ws://${HOST}:${PORT}/extension`
+    );
+  }
+);
