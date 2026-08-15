@@ -1,0 +1,25 @@
+{
+  "manifest_version": 3,
+  "name": "ChatGPT Auto Temporary Chat",
+  "version": "1.0.0",
+  "description": "Best-effort UI helper that automatically enables Temporary Chat for new ChatGPT conversations.",
+  "permissions": ["storage"],
+  "host_permissions": [
+    "https://chatgpt.com/*",
+    "https://chat.openai.com/*"
+  ],
+  "content_scripts": [
+    {
+      "matches": [
+        "https://chatgpt.com/*",
+        "https://chat.openai.com/*"
+      ],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "action": {
+    "default_title": "Auto Temporary Chat",
+    "default_popup": "popup.html"
+  }
+}
