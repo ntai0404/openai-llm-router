@@ -1,7 +1,7 @@
 ﻿{
   "manifest_version": 3,
   "name": "ChatGPT Auto Temporary Router",
-  "version": "1.4.0",
+  "version": "1.5.0",
   "description": "Opens a new Temporary Chat and fills a demo prompt.",
   "permissions": ["tabs"],
   "host_permissions": ["https://chatgpt.com/*"],
@@ -19,3 +19,4 @@
     "default_title": "Open Temporary Chat Demo"
   }
 }
+

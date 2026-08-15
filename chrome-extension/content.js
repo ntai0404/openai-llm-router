@@ -1,9 +1,7 @@
 ﻿(() => {
-  const DEMO_PROMPT =
-    "Explain quantum computing in one sentence.";
+  const DEMO_PROMPT = "Explain quantum computing in one sentence.";
 
-  const params =
-    new URLSearchParams(location.search);
+  const params = new URLSearchParams(location.search);
 
   if (params.get("router-demo") !== "1") {
     return;
@@ -19,8 +17,8 @@
     const s = getComputedStyle(el);
 
     return (
-      r.width > 100 &&
-      r.height > 20 &&
+      r.width > 0 &&
+      r.height > 0 &&
       s.display !== "none" &&
       s.visibility !== "hidden"
     );
@@ -31,26 +29,18 @@
       "#prompt-textarea",
       'textarea[placeholder*="Ask" i]',
       'textarea[placeholder*="Message" i]',
-      'textarea',
       '[contenteditable="true"][role="textbox"]',
       '[contenteditable="true"][data-lexical-editor="true"]',
-      '.ProseMirror[contenteditable="true"]'
+      '.ProseMirror[contenteditable="true"]',
+      "textarea"
     ];
 
     for (const selector of selectors) {
-      const matches =
-        [...document.querySelectorAll(selector)]
-          .filter(visible);
+      const els = [...document.querySelectorAll(selector)]
+        .filter(visible);
 
-      if (matches.length) {
-        matches.sort((a, b) => {
-          return (
-            b.getBoundingClientRect().top -
-            a.getBoundingClientRect().top
-          );
-        });
-
-        return matches[0];
+      if (els.length) {
+        return els[els.length - 1];
       }
     }
 
@@ -58,12 +48,11 @@
   }
 
   function fillTextarea(el, text) {
-    const prototype =
-      Object.getPrototypeOf(el);
+    const proto = Object.getPrototypeOf(el);
 
     const descriptor =
       Object.getOwnPropertyDescriptor(
-        prototype,
+        proto,
         "value"
       );
 
@@ -132,53 +121,189 @@
     );
   }
 
-  async function run() {
+  function findSendButton(composer) {
+    const selectors = [
+      'button[data-testid="send-button"]',
+      'button[aria-label*="send prompt" i]',
+      'button[aria-label*="send message" i]',
+      'button[aria-label="Send"]',
+      'button[type="submit"]'
+    ];
+
+    for (const selector of selectors) {
+      const button =
+        [...document.querySelectorAll(selector)]
+          .find(el =>
+            visible(el) &&
+            !el.disabled &&
+            el.getAttribute("aria-disabled") !== "true"
+          );
+
+      if (button) {
+        return button;
+      }
+    }
+
     /*
-      Wait for Temporary Chat UI + composer hydration.
+      Fallback for ChatGPT layouts where the send arrow
+      does not expose a stable selector.
+      Search buttons close to the composer on its right side.
     */
-    for (let i = 0; i < 40; i++) {
+    if (composer) {
+      const cr =
+        composer.getBoundingClientRect();
+
+      const candidates =
+        [...document.querySelectorAll("button")]
+          .filter(button => {
+            if (
+              !visible(button) ||
+              button.disabled ||
+              button.getAttribute("aria-disabled") === "true"
+            ) {
+              return false;
+            }
+
+            const r =
+              button.getBoundingClientRect();
+
+            return (
+              r.left >= cr.left &&
+              r.right <= cr.right + 100 &&
+              r.top >= cr.top - 30 &&
+              r.bottom <= cr.bottom + 30 &&
+              r.width >= 30 &&
+              r.width <= 80 &&
+              r.height >= 30 &&
+              r.height <= 80
+            );
+          });
+
+      candidates.sort((a, b) =>
+        b.getBoundingClientRect().left -
+        a.getBoundingClientRect().left
+      );
+
+      return candidates[0] || null;
+    }
+
+    return null;
+  }
+
+  async function sendMessage(composer) {
+    /*
+      Wait for ChatGPT/React to recognize the new prompt
+      and enable the Send button.
+    */
+    for (let i = 0; i < 30; i++) {
+      const sendButton =
+        findSendButton(composer);
+
+      if (sendButton) {
+        sendButton.focus();
+        sendButton.click();
+
+        console.log(
+          "[Router Demo] Send clicked.",
+          sendButton
+        );
+
+        return true;
+      }
+
+      await sleep(150);
+    }
+
+    /*
+      Last-resort fallback: submit with Enter.
+    */
+    composer.focus();
+
+    composer.dispatchEvent(
+      new KeyboardEvent("keydown", {
+        key: "Enter",
+        code: "Enter",
+        keyCode: 13,
+        which: 13,
+        bubbles: true,
+        cancelable: true
+      })
+    );
+
+    composer.dispatchEvent(
+      new KeyboardEvent("keyup", {
+        key: "Enter",
+        code: "Enter",
+        keyCode: 13,
+        which: 13,
+        bubbles: true,
+        cancelable: true
+      })
+    );
+
+    return true;
+  }
+
+  async function run() {
+    for (let i = 0; i < 50; i++) {
       const composer =
         findComposer();
 
-      if (composer) {
-        composer.focus();
+      if (!composer) {
+        await sleep(200);
+        continue;
+      }
 
-        if (
-          composer instanceof
-          HTMLTextAreaElement
-        ) {
-          fillTextarea(
-            composer,
-            DEMO_PROMPT
-          );
-        } else {
-          fillContentEditable(
-            composer,
-            DEMO_PROMPT
-          );
-        }
+      composer.focus();
 
-        await sleep(300);
+      if (
+        composer instanceof
+        HTMLTextAreaElement
+      ) {
+        fillTextarea(
+          composer,
+          DEMO_PROMPT
+        );
+      } else {
+        fillContentEditable(
+          composer,
+          DEMO_PROMPT
+        );
+      }
 
-        const current =
-          (
-            composer.value ||
-            composer.innerText ||
-            composer.textContent ||
-            ""
-          ).trim();
+      await sleep(500);
 
-        if (
-          current.includes(
-            "Explain quantum computing"
-          )
-        ) {
-          chrome.runtime.sendMessage({
-            type: "PROMPT_FILLED"
-          });
+      const current =
+        (
+          composer.value ||
+          composer.innerText ||
+          composer.textContent ||
+          ""
+        ).trim();
+
+      if (
+        current.includes(
+          "Explain quantum computing"
+        )
+      ) {
+        console.log(
+          "[Router Demo] Prompt filled."
+        );
+
+        await sleep(500);
+
+        const sent =
+          await sendMessage(composer);
+
+        if (sent) {
+          try {
+            chrome.runtime.sendMessage({
+              type: "PROMPT_FILLED"
+            });
+          } catch {}
 
           console.log(
-            "[Router Demo] Prompt filled."
+            "[Router Demo] Prompt sent."
           );
 
           return;
@@ -188,12 +313,14 @@
       await sleep(250);
     }
 
-    chrome.runtime.sendMessage({
-      type: "PROMPT_FAILED"
-    });
+    try {
+      chrome.runtime.sendMessage({
+        type: "PROMPT_FAILED"
+      });
+    } catch {}
 
     console.error(
-      "[Router Demo] Composer not found."
+      "[Router Demo] Failed to fill/send."
     );
   }
 
