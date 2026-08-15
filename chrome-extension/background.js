@@ -335,55 +335,24 @@ async function closeIdleWorker() {
 async function parkWorker() {
   clearTimeout(idleCloseTimer);
 
-  if (!workerTabId) {
-    return;
-  }
+  if (!workerTabId) return;
 
   await restorePreviousTab();
 
   try {
-    await chrome.tabs.update(
-      workerTabId,
-      {
-        url: PARK_URL,
-        active: false,
-        pinned: false
-      }
-    );
-
-    await waitForTabComplete(
-      workerTabId,
-      10000
-    ).catch(() => {});
-
-    await sleep(300);
-
-    const tab =
-      await chrome.tabs.get(workerTabId);
+    const tab = await chrome.tabs.get(workerTabId);
 
     if (!tab.active) {
-      await chrome.tabs.discard(
-        workerTabId
-      ).catch(() => {});
+      await chrome.tabs.discard(workerTabId).catch(() => {});
     }
 
-    console.log(
-      "[Router] worker parked",
-      workerTabId
-    );
+    console.log("[Router] worker idle/discarded", workerTabId);
 
-    idleCloseTimer =
-      setTimeout(
-        () => {
-          void closeIdleWorker();
-        },
-        IDLE_CLOSE_MS
-      );
+    idleCloseTimer = setTimeout(() => {
+      void closeIdleWorker();
+    }, IDLE_CLOSE_MS);
   } catch (error) {
-    console.warn(
-      "[Router] park failed",
-      error
-    );
+    console.warn("[Router] park failed", error);
   }
 }
 
@@ -521,8 +490,7 @@ async function reportJobError(
 async function runBrowserJob(job) {
   clearTimeout(idleCloseTimer);
 
-  const tab =
-    await ensureWorkerTab();
+  const tab = await ensureWorkerTab();
 
   await rememberCurrentTab();
 
@@ -532,7 +500,7 @@ async function runBrowserJob(job) {
     encodeURIComponent(job.id);
 
   console.log(
-    "[Router] reuse worker",
+    "[Router] reuse background worker",
     tab.id,
     "job",
     job.id
@@ -542,26 +510,12 @@ async function runBrowserJob(job) {
     tab.id,
     {
       url,
-      active: true,
+      active: false,
       pinned: false
     }
   );
 
-  if (tab.windowId) {
-    try {
-      await chrome.windows.update(
-        tab.windowId,
-        {
-          focused: true
-        }
-      );
-    } catch {}
-  }
-
-  await waitForTabComplete(
-    tab.id
-  );
-
+  await waitForTabComplete(tab.id);
   await sleep(500);
 
   const accepted =
@@ -604,9 +558,11 @@ async function pumpQueue() {
 
     workerBusy = false;
 
-    await parkWorker();
-
-    void pumpQueue();
+    if (pendingJobs.length) {
+      void pumpQueue();
+    } else {
+      await parkWorker();
+    }
   }
 }
 
@@ -685,9 +641,12 @@ chrome.runtime.onMessage.addListener(
           workerBusy = false;
 
           await sleep(250);
-          await parkWorker();
 
-          void pumpQueue();
+          if (pendingJobs.length) {
+            void pumpQueue();
+          } else {
+            await parkWorker();
+          }
         })
         .catch(async error => {
           sendResponse({
@@ -697,9 +656,11 @@ chrome.runtime.onMessage.addListener(
 
           workerBusy = false;
 
-          await parkWorker();
-
-          void pumpQueue();
+    if (pendingJobs.length) {
+      void pumpQueue();
+    } else {
+      await parkWorker();
+    }
         });
 
       return true;
@@ -728,9 +689,11 @@ chrome.runtime.onMessage.addListener(
 
           workerBusy = false;
 
-          await parkWorker();
-
-          void pumpQueue();
+    if (pendingJobs.length) {
+      void pumpQueue();
+    } else {
+      await parkWorker();
+    }
         });
 
       return true;
@@ -813,3 +776,4 @@ chrome.runtime.onStartup.addListener(
 );
 
 void init();
+

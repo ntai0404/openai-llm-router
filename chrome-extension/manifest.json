@@ -2,8 +2,8 @@
     "manifest_version":  3,
     "minimum_chrome_version":  "116",
     "name":  "ChatGPT Auto Temporary Router",
-    "version":  "1.9.2",
-    "description":  "Recycles one unpinned ChatGPT worker tab, discards it while idle, and closes it after 60 seconds.",
+    "version":  "1.9.3",
+    "description":  "Runs one recyclable ChatGPT worker tab fully in the background without stealing focus.",
     "permissions":  [
                         "tabs",
                         "storage",
