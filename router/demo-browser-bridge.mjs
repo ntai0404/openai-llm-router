@@ -270,40 +270,97 @@ const server =
 
       if (
         req.method === "POST" &&
-        req.url === "/demo/run"
+        (
+          req.url === "/demo/run" ||
+          req.url === "/browser/run"
+        )
       ) {
+        const isBrowserRun =
+          req.url === "/browser/run";
+
+        let body;
         let prompt;
 
         try {
-          prompt =
-            await parsePrompt(req);
+          body = await readJson(req);
+
+          prompt = extractText(
+            body.input ?? body.prompt
+          );
         } catch (error) {
           return json(res, 400, {
-            ok: false,
+            ...(isBrowserRun
+              ? {}
+              : { ok: false }),
             error: error.message
           });
         }
 
         if (!prompt) {
           return json(res, 400, {
-            ok: false,
+            ...(isBrowserRun
+              ? {}
+              : { ok: false }),
             error: "Prompt is required."
           });
+        }
+
+        let timeoutMs =
+          RUN_TIMEOUT_MS;
+
+        const requestedTimeout =
+          Number(body.timeout_ms);
+
+        if (
+          Number.isFinite(
+            requestedTimeout
+          )
+        ) {
+          timeoutMs = Math.max(
+            1000,
+            Math.min(
+              RUN_TIMEOUT_MS,
+              Math.trunc(
+                requestedTimeout
+              )
+            )
+          );
         }
 
         const job =
           createJob(prompt);
 
-        await waitForJob(job);
+        await waitForJob(
+          job,
+          timeoutMs
+        );
 
         if (
           job.status === "completed"
         ) {
+          if (isBrowserRun) {
+            return json(res, 200, {
+              id: job.id,
+              status: "completed",
+              output_text:
+                job.response
+            });
+          }
+
           return json(res, 200, {
             ok: true,
             job_id: job.id,
             status: "completed",
-            output_text: job.response
+            output_text:
+              job.response
+          });
+        }
+
+        if (isBrowserRun) {
+          return json(res, 504, {
+            id: job.id,
+            status: job.status,
+            error: job.error
           });
         }
 
@@ -649,3 +706,4 @@ server.listen(
     );
   }
 );
+
