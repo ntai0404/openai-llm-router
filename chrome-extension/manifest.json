@@ -2,7 +2,7 @@
     "manifest_version":  3,
     "minimum_chrome_version":  "116",
     "name":  "ChatGPT Auto Temporary Router",
-    "version":  "1.8.1",
+    "version":  "1.8.2",
     "description":  "Reuses one resource-efficient ChatGPT Temporary Chat worker tab for queued local jobs.",
     "permissions":  [
                         "tabs",

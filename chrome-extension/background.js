@@ -635,7 +635,9 @@ chrome.runtime.onMessage.addListener(
   }
 );
 
-chrome.action.onClicked.addListener(`n  async () => {`n    connectSocket();
+chrome.action.onClicked.addListener(
+  async () => {
+    connectSocket();
     const tab =
       await ensureWorkerTab();
 
@@ -703,3 +705,4 @@ async function ensureReconnectAlarm() {
 }
 
 void ensureReconnectAlarm();
+
