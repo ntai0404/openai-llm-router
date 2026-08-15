@@ -1,18 +1,24 @@
-﻿const DEMO_URL =
-  "https://chatgpt.com/?temporary-chat=true&router-demo=1";
+﻿const TEMP_URL =
+  "https://chatgpt.com/?temporary-chat=true";
+
+async function localFetch(path, options = {}) {
+  const response =
+    await fetch(`http://127.0.0.1:8788${path}`, options);
+
+  const data = await response.json();
+
+  if (!response.ok) {
+    throw new Error(data.error || "Local bridge request failed.");
+  }
+
+  return data;
+}
 
 chrome.action.onClicked.addListener(async () => {
-  const tab = await chrome.tabs.create({
-    url: DEMO_URL,
+  await chrome.tabs.create({
+    url: TEMP_URL,
     active: true
   });
-
-  if (tab.id) {
-    chrome.action.setBadgeText({
-      tabId: tab.id,
-      text: "..."
-    });
-  }
 });
 
 chrome.runtime.onMessage.addListener(
@@ -20,53 +26,64 @@ chrome.runtime.onMessage.addListener(
     const tabId = sender.tab?.id;
 
     if (message?.type === "GET_ROUTER_JOB") {
-      const { id, token } = message;
-
-      fetch(
-        `http://127.0.0.1:8788/internal/jobs/${encodeURIComponent(id)}`,
+      localFetch(
+        `/internal/jobs/${encodeURIComponent(message.id)}`,
         {
           headers: {
-            "x-router-job-token": token
+            "x-router-job-token": message.token
           }
         }
       )
-        .then(async response => {
-          const data = await response.json();
-
-          if (!response.ok) {
-            throw new Error(
-              data.error || "Unable to read router job."
-            );
-          }
-
-          sendResponse({
-            ok: true,
-            job: data
-          });
-        })
-        .catch(error => {
-          sendResponse({
-            ok: false,
-            error: error.message
-          });
-        });
+        .then(job => sendResponse({ ok: true, job }))
+        .catch(error =>
+          sendResponse({ ok: false, error: error.message })
+        );
 
       return true;
     }
 
     if (message?.type === "MARK_ROUTER_JOB_SENT") {
-      const { id, token } = message;
-
-      fetch(
-        `http://127.0.0.1:8788/internal/jobs/${encodeURIComponent(id)}/sent`,
+      localFetch(
+        `/internal/jobs/${encodeURIComponent(message.id)}/sent`,
         {
           method: "POST",
           headers: {
-            "x-router-job-token": token
+            "x-router-job-token": message.token
           }
         }
       )
-        .then(() => {
+        .then(data => {
+          if (tabId) {
+            chrome.action.setBadgeText({
+              tabId,
+              text: "..."
+            });
+          }
+
+          sendResponse({ ok: true, data });
+        })
+        .catch(error =>
+          sendResponse({ ok: false, error: error.message })
+        );
+
+      return true;
+    }
+
+    if (message?.type === "SUBMIT_ROUTER_RESULT") {
+      localFetch(
+        `/internal/jobs/${encodeURIComponent(message.id)}/result`,
+        {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            "x-router-job-token": message.token
+          },
+          body: JSON.stringify({
+            response: message.response
+          })
+        }
+      )
+        .then(data => {
           if (tabId) {
             chrome.action.setBadgeText({
               tabId,
@@ -74,34 +91,39 @@ chrome.runtime.onMessage.addListener(
             });
           }
 
-          sendResponse({ ok: true });
+          sendResponse({ ok: true, data });
         })
-        .catch(error => {
-          sendResponse({
-            ok: false,
-            error: error.message
-          });
-        });
+        .catch(error =>
+          sendResponse({ ok: false, error: error.message })
+        );
 
       return true;
     }
 
-    if (message?.type === "PROMPT_SENT") {
-      if (tabId) {
-        chrome.action.setBadgeText({
-          tabId,
-          text: "OK"
-        });
-      }
-    }
+    if (message?.type === "MARK_ROUTER_JOB_ERROR") {
+      localFetch(
+        `/internal/jobs/${encodeURIComponent(message.id)}/error`,
+        {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            "x-router-job-token": message.token
+          },
+          body: JSON.stringify({
+            error: message.error
+          })
+        }
+      ).catch(() => {});
 
-    if (message?.type === "PROMPT_FAILED") {
       if (tabId) {
         chrome.action.setBadgeText({
           tabId,
           text: "!"
         });
       }
+
+      sendResponse({ ok: true });
+      return true;
     }
   }
 );

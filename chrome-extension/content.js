@@ -1,19 +1,16 @@
 ﻿(() => {
-  const params =
-    new URLSearchParams(location.search);
+  const params = new URLSearchParams(location.search);
 
-  if (params.get("router-demo") !== "1") {
+  const jobId = params.get("router-job");
+  const jobToken = params.get("router-token");
+
+  if (
+    params.get("router-demo") !== "1" ||
+    !jobId ||
+    !jobToken
+  ) {
     return;
   }
-
-  const jobId =
-    params.get("router-job");
-
-  const jobToken =
-    params.get("router-token");
-
-  const FALLBACK_PROMPT =
-    "Explain quantum computing in one sentence.";
 
   const sleep = ms =>
     new Promise(resolve => setTimeout(resolve, ms));
@@ -44,59 +41,48 @@
     ];
 
     for (const selector of selectors) {
-      const matches =
+      const found =
         [...document.querySelectorAll(selector)]
           .filter(visible);
 
-      if (matches.length) {
-        return matches[matches.length - 1];
+      if (found.length) {
+        return found[found.length - 1];
       }
     }
 
     return null;
   }
 
-  function fillTextarea(el, text) {
-    const proto = Object.getPrototypeOf(el);
-
-    const descriptor =
-      Object.getOwnPropertyDescriptor(
-        proto,
-        "value"
-      );
-
-    if (descriptor?.set) {
-      descriptor.set.call(el, text);
-    } else {
-      el.value = text;
-    }
-
-    el.dispatchEvent(
-      new InputEvent("input", {
-        bubbles: true,
-        inputType: "insertText",
-        data: text
-      })
-    );
-
-    el.dispatchEvent(
-      new Event("change", {
-        bubbles: true
-      })
-    );
-  }
-
-  function fillContentEditable(el, text) {
+  function fill(el, text) {
     el.focus();
 
-    const selection =
-      window.getSelection();
+    if (el instanceof HTMLTextAreaElement) {
+      const proto = Object.getPrototypeOf(el);
 
-    const range =
-      document.createRange();
+      const descriptor =
+        Object.getOwnPropertyDescriptor(proto, "value");
+
+      if (descriptor?.set) {
+        descriptor.set.call(el, text);
+      } else {
+        el.value = text;
+      }
+
+      el.dispatchEvent(
+        new InputEvent("input", {
+          bubbles: true,
+          inputType: "insertText",
+          data: text
+        })
+      );
+
+      return;
+    }
+
+    const selection = window.getSelection();
+    const range = document.createRange();
 
     range.selectNodeContents(el);
-
     selection.removeAllRanges();
     selection.addRange(range);
 
@@ -104,11 +90,7 @@
 
     try {
       inserted =
-        document.execCommand(
-          "insertText",
-          false,
-          text
-        );
+        document.execCommand("insertText", false, text);
     } catch {}
 
     if (!inserted) {
@@ -122,12 +104,6 @@
         })
       );
     }
-
-    el.dispatchEvent(
-      new Event("change", {
-        bubbles: true
-      })
-    );
   }
 
   function findSendButton(composer) {
@@ -148,15 +124,12 @@
             el.getAttribute("aria-disabled") !== "true"
           );
 
-      if (button) {
-        return button;
-      }
+      if (button) return button;
     }
 
     if (!composer) return null;
 
-    const cr =
-      composer.getBoundingClientRect();
+    const cr = composer.getBoundingClientRect();
 
     const candidates =
       [...document.querySelectorAll("button")]
@@ -169,8 +142,7 @@
             return false;
           }
 
-          const r =
-            button.getBoundingClientRect();
+          const r = button.getBoundingClientRect();
 
           return (
             r.left >= cr.left &&
@@ -193,11 +165,57 @@
     return candidates[0] || null;
   }
 
-  async function getPrompt() {
-    if (!jobId || !jobToken) {
-      return FALLBACK_PROMPT;
-    }
+  function assistantElements() {
+    const direct =
+      [...document.querySelectorAll(
+        '[data-message-author-role="assistant"]'
+      )].filter(visible);
 
+    if (direct.length) return direct;
+
+    return [
+      ...document.querySelectorAll(
+        'article[data-testid^="conversation-turn-"]'
+      )
+    ].filter(el => {
+      if (!visible(el)) return false;
+
+      const text =
+        (el.innerText || "").toLowerCase();
+
+      return (
+        text.length > 0 &&
+        !el.querySelector(
+          '[data-message-author-role="user"]'
+        )
+      );
+    });
+  }
+
+  function latestAssistantText() {
+    const items = assistantElements();
+
+    if (!items.length) return "";
+
+    const last = items[items.length - 1];
+
+    return (last.innerText || last.textContent || "").trim();
+  }
+
+  function isGenerating() {
+    const selectors = [
+      'button[data-testid="stop-button"]',
+      'button[aria-label*="stop generating" i]',
+      'button[aria-label*="stop response" i]'
+    ];
+
+    return selectors.some(selector =>
+      [...document.querySelectorAll(selector)]
+        .some(visible)
+    );
+  }
+
+  async function getJob() {
     const response =
       await chrome.runtime.sendMessage({
         type: "GET_ROUTER_JOB",
@@ -207,62 +225,30 @@
 
     if (!response?.ok) {
       throw new Error(
-        response?.error || "Unable to load prompt."
+        response?.error || "Unable to load router job."
       );
     }
 
-    return response.job.prompt;
+    return response.job;
   }
 
   async function sendPrompt(prompt) {
-    for (let attempt = 0; attempt < 50; attempt++) {
-      const composer =
-        findComposer();
+    for (let attempt = 0; attempt < 60; attempt++) {
+      const composer = findComposer();
 
       if (!composer) {
         await sleep(200);
         continue;
       }
 
-      composer.focus();
-
-      if (
-        composer instanceof
-        HTMLTextAreaElement
-      ) {
-        fillTextarea(
-          composer,
-          prompt
-        );
-      } else {
-        fillContentEditable(
-          composer,
-          prompt
-        );
-      }
-
+      fill(composer, prompt);
       await sleep(500);
 
-      const current =
-        (
-          composer.value ||
-          composer.innerText ||
-          composer.textContent ||
-          ""
-        ).trim();
-
-      if (!current) {
-        await sleep(200);
-        continue;
-      }
-
       for (let i = 0; i < 30; i++) {
-        const send =
-          findSendButton(composer);
+        const send = findSendButton(composer);
 
         if (send) {
           send.click();
-
           return true;
         }
 
@@ -288,45 +274,102 @@
     return false;
   }
 
+  async function waitForResponse() {
+    let lastText = "";
+    let stableCount = 0;
+    let sawResponse = false;
+
+    for (let i = 0; i < 360; i++) {
+      const text = latestAssistantText();
+
+      if (text) {
+        sawResponse = true;
+
+        if (text === lastText) {
+          stableCount++;
+        } else {
+          lastText = text;
+          stableCount = 0;
+        }
+
+        if (
+          sawResponse &&
+          stableCount >= 4 &&
+          !isGenerating()
+        ) {
+          return text;
+        }
+      }
+
+      await sleep(500);
+    }
+
+    throw new Error(
+      "Timed out waiting for ChatGPT response."
+    );
+  }
+
   async function run() {
     try {
-      const prompt =
-        await getPrompt();
+      const job = await getJob();
 
-      const sent =
-        await sendPrompt(prompt);
+      /*
+        Remove the local job token from the visible address bar
+        after the extension has obtained the job.
+      */
+      const clean = new URL(location.href);
+
+      clean.searchParams.delete("router-demo");
+      clean.searchParams.delete("router-job");
+      clean.searchParams.delete("router-token");
+
+      history.replaceState(
+        {},
+        "",
+        clean.pathname + clean.search + clean.hash
+      );
+
+      const sent = await sendPrompt(job.prompt);
 
       if (!sent) {
+        throw new Error("Unable to send prompt.");
+      }
+
+      await chrome.runtime.sendMessage({
+        type: "MARK_ROUTER_JOB_SENT",
+        id: jobId,
+        token: jobToken
+      });
+
+      const response = await waitForResponse();
+
+      const result =
+        await chrome.runtime.sendMessage({
+          type: "SUBMIT_ROUTER_RESULT",
+          id: jobId,
+          token: jobToken,
+          response
+        });
+
+      if (!result?.ok) {
         throw new Error(
-          "Could not send prompt."
+          result?.error || "Unable to submit response."
         );
       }
 
-      if (jobId && jobToken) {
-        await chrome.runtime.sendMessage({
-          type: "MARK_ROUTER_JOB_SENT",
-          id: jobId,
-          token: jobToken
-        });
-      } else {
-        await chrome.runtime.sendMessage({
-          type: "PROMPT_SENT"
-        });
-      }
-
       console.log(
-        "[Router Demo] Dynamic prompt sent:",
-        prompt
+        "[Router] Response captured:",
+        response
       );
     } catch (error) {
-      console.error(
-        "[Router Demo]",
-        error
-      );
+      console.error("[Router]", error);
 
       try {
         await chrome.runtime.sendMessage({
-          type: "PROMPT_FAILED"
+          type: "MARK_ROUTER_JOB_ERROR",
+          id: jobId,
+          token: jobToken,
+          error: error.message
         });
       } catch {}
     }
