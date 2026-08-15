@@ -2,8 +2,8 @@
     "manifest_version":  3,
     "minimum_chrome_version":  "116",
     "name":  "ChatGPT Auto Temporary Router",
-    "version":  "1.9.4",
-    "description":  "Reuses one background ChatGPT worker and closes it reliably with chrome.alarms after 60 seconds idle.",
+    "version":  "1.9.5",
+    "description":  "Reuses one ChatGPT worker tab and closes it unconditionally after the idle deadline.",
     "permissions":  [
                         "tabs",
                         "storage",

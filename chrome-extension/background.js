@@ -327,12 +327,7 @@ async function closeIdleWorker() {
   }
 
   try {
-    const tab = await chrome.tabs.get(id);
-
-    if (tab.active) {
-      console.log("[Router] idle close skipped because worker is active", id);
-      return;
-    }
+    await chrome.tabs.get(id);
   } catch {
     if (workerTabId === id) {
       workerTabId = null;
@@ -341,6 +336,8 @@ async function closeIdleWorker() {
     await chrome.storage.local.remove("workerTabId");
     return;
   }
+
+  console.log("[Router] idle deadline reached, closing worker", id);
 
   if (workerTabId === id) {
     workerTabId = null;
@@ -815,5 +812,6 @@ chrome.runtime.onStartup.addListener(
 );
 
 void init();
+
 
 
