@@ -1,20 +1,12 @@
 ﻿{
   "manifest_version": 3,
   "name": "ChatGPT Auto Temporary Router",
-  "version": "1.2.0",
-  "description": "One click opens a fresh ChatGPT chat and automatically enables Temporary Chat.",
-  "permissions": ["tabs", "storage"],
-  "host_permissions": ["https://chatgpt.com/*"],
+  "version": "1.3.0",
+  "description": "One click opens a brand-new ChatGPT Temporary Chat without touching existing ChatGPT tabs.",
+  "permissions": ["tabs"],
   "background": {
     "service_worker": "background.js"
   },
-  "content_scripts": [
-    {
-      "matches": ["https://chatgpt.com/*"],
-      "js": ["content.js"],
-      "run_at": "document_idle"
-    }
-  ],
   "action": {
     "default_title": "Open New Temporary Chat"
   }

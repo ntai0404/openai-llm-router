@@ -1,78 +1,39 @@
-﻿const CHATGPT_NEW_CHAT = "https://chatgpt.com/";
+﻿const TEMPORARY_CHAT_URL = "https://chatgpt.com/?temporary-chat=true";
 
-async function setBadge(tabId, text) {
-  if (!tabId) return;
-
+chrome.action.onClicked.addListener(async () => {
   try {
-    await chrome.action.setBadgeText({
-      tabId,
-      text
-    });
-  } catch {}
-}
-
-chrome.action.onClicked.addListener(async (activeTab) => {
-  try {
-    let targetTab;
-
     /*
-      IMPORTANT:
-      Never search for another existing ChatGPT tab.
-
-      If the USER'S CURRENT TAB is ChatGPT, reuse only that tab.
-      Otherwise create a brand-new ChatGPT tab.
+      Always create a BRAND-NEW tab.
+      Never search for, focus, reload, or modify an existing ChatGPT tab.
     */
-    if (
-      activeTab?.id &&
-      typeof activeTab.url === "string" &&
-      activeTab.url.startsWith("https://chatgpt.com/")
-    ) {
-      targetTab = activeTab;
+    const tab = await chrome.tabs.create({
+      url: TEMPORARY_CHAT_URL,
+      active: true
+    });
 
-      await setBadge(targetTab.id, "...");
+    if (!tab.id) return;
 
-      await chrome.storage.local.set({
-        pendingTemporaryTabId: targetTab.id,
-        pendingTemporaryAt: Date.now()
-      });
+    await chrome.action.setBadgeText({
+      tabId: tab.id,
+      text: "..."
+    });
 
-      await chrome.tabs.update(targetTab.id, {
-        url: CHATGPT_NEW_CHAT,
-        active: true
-      });
-    } else {
-      targetTab = await chrome.tabs.create({
-        url: CHATGPT_NEW_CHAT,
-        active: true
-      });
+    const onUpdated = async (tabId, changeInfo) => {
+      if (tabId !== tab.id || changeInfo.status !== "complete") return;
 
-      await chrome.storage.local.set({
-        pendingTemporaryTabId: targetTab.id,
-        pendingTemporaryAt: Date.now()
-      });
+      chrome.tabs.onUpdated.removeListener(onUpdated);
 
-      await setBadge(targetTab.id, "...");
-    }
+      try {
+        await chrome.action.setBadgeText({
+          tabId,
+          text: "OK"
+        });
+      } catch {}
+    };
+
+    chrome.tabs.onUpdated.addListener(onUpdated);
+
   } catch (error) {
-    console.error("Unable to open ChatGPT:", error);
-  }
-});
-
-chrome.runtime.onMessage.addListener((message, sender) => {
-  const tabId = sender.tab?.id;
-
-  if (!tabId) return;
-
-  if (message?.type === "TEMPORARY_OK") {
-    setBadge(tabId, "OK");
-
-    chrome.storage.local.remove([
-      "pendingTemporaryTabId",
-      "pendingTemporaryAt"
-    ]);
-  }
-
-  if (message?.type === "TEMPORARY_FAILED") {
-    setBadge(tabId, "!");
+    console.error("[Temporary Router]", error);
   }
 });
