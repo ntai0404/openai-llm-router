@@ -1,10 +1,13 @@
 ﻿{
   "manifest_version": 3,
   "name": "ChatGPT Auto Temporary Router",
-  "version": "1.5.0",
-  "description": "Opens a new Temporary Chat and fills a demo prompt.",
+  "version": "1.6.0",
+  "description": "Routes local demo prompts into a fresh ChatGPT Temporary Chat.",
   "permissions": ["tabs"],
-  "host_permissions": ["https://chatgpt.com/*"],
+  "host_permissions": [
+    "https://chatgpt.com/*",
+    "http://127.0.0.1:8788/*"
+  ],
   "background": {
     "service_worker": "background.js"
   },
@@ -19,4 +22,3 @@
     "default_title": "Open Temporary Chat Demo"
   }
 }
-

@@ -1,11 +1,19 @@
 ﻿(() => {
-  const DEMO_PROMPT = "Explain quantum computing in one sentence.";
-
-  const params = new URLSearchParams(location.search);
+  const params =
+    new URLSearchParams(location.search);
 
   if (params.get("router-demo") !== "1") {
     return;
   }
+
+  const jobId =
+    params.get("router-job");
+
+  const jobToken =
+    params.get("router-token");
+
+  const FALLBACK_PROMPT =
+    "Explain quantum computing in one sentence.";
 
   const sleep = ms =>
     new Promise(resolve => setTimeout(resolve, ms));
@@ -36,11 +44,12 @@
     ];
 
     for (const selector of selectors) {
-      const els = [...document.querySelectorAll(selector)]
-        .filter(visible);
+      const matches =
+        [...document.querySelectorAll(selector)]
+          .filter(visible);
 
-      if (els.length) {
-        return els[els.length - 1];
+      if (matches.length) {
+        return matches[matches.length - 1];
       }
     }
 
@@ -144,108 +153,69 @@
       }
     }
 
-    /*
-      Fallback for ChatGPT layouts where the send arrow
-      does not expose a stable selector.
-      Search buttons close to the composer on its right side.
-    */
-    if (composer) {
-      const cr =
-        composer.getBoundingClientRect();
+    if (!composer) return null;
 
-      const candidates =
-        [...document.querySelectorAll("button")]
-          .filter(button => {
-            if (
-              !visible(button) ||
-              button.disabled ||
-              button.getAttribute("aria-disabled") === "true"
-            ) {
-              return false;
-            }
+    const cr =
+      composer.getBoundingClientRect();
 
-            const r =
-              button.getBoundingClientRect();
+    const candidates =
+      [...document.querySelectorAll("button")]
+        .filter(button => {
+          if (
+            !visible(button) ||
+            button.disabled ||
+            button.getAttribute("aria-disabled") === "true"
+          ) {
+            return false;
+          }
 
-            return (
-              r.left >= cr.left &&
-              r.right <= cr.right + 100 &&
-              r.top >= cr.top - 30 &&
-              r.bottom <= cr.bottom + 30 &&
-              r.width >= 30 &&
-              r.width <= 80 &&
-              r.height >= 30 &&
-              r.height <= 80
-            );
-          });
+          const r =
+            button.getBoundingClientRect();
 
-      candidates.sort((a, b) =>
+          return (
+            r.left >= cr.left &&
+            r.right <= cr.right + 100 &&
+            r.top >= cr.top - 30 &&
+            r.bottom <= cr.bottom + 30 &&
+            r.width >= 30 &&
+            r.width <= 80 &&
+            r.height >= 30 &&
+            r.height <= 80
+          );
+        });
+
+    candidates.sort(
+      (a, b) =>
         b.getBoundingClientRect().left -
         a.getBoundingClientRect().left
+    );
+
+    return candidates[0] || null;
+  }
+
+  async function getPrompt() {
+    if (!jobId || !jobToken) {
+      return FALLBACK_PROMPT;
+    }
+
+    const response =
+      await chrome.runtime.sendMessage({
+        type: "GET_ROUTER_JOB",
+        id: jobId,
+        token: jobToken
+      });
+
+    if (!response?.ok) {
+      throw new Error(
+        response?.error || "Unable to load prompt."
       );
-
-      return candidates[0] || null;
     }
 
-    return null;
+    return response.job.prompt;
   }
 
-  async function sendMessage(composer) {
-    /*
-      Wait for ChatGPT/React to recognize the new prompt
-      and enable the Send button.
-    */
-    for (let i = 0; i < 30; i++) {
-      const sendButton =
-        findSendButton(composer);
-
-      if (sendButton) {
-        sendButton.focus();
-        sendButton.click();
-
-        console.log(
-          "[Router Demo] Send clicked.",
-          sendButton
-        );
-
-        return true;
-      }
-
-      await sleep(150);
-    }
-
-    /*
-      Last-resort fallback: submit with Enter.
-    */
-    composer.focus();
-
-    composer.dispatchEvent(
-      new KeyboardEvent("keydown", {
-        key: "Enter",
-        code: "Enter",
-        keyCode: 13,
-        which: 13,
-        bubbles: true,
-        cancelable: true
-      })
-    );
-
-    composer.dispatchEvent(
-      new KeyboardEvent("keyup", {
-        key: "Enter",
-        code: "Enter",
-        keyCode: 13,
-        which: 13,
-        bubbles: true,
-        cancelable: true
-      })
-    );
-
-    return true;
-  }
-
-  async function run() {
-    for (let i = 0; i < 50; i++) {
+  async function sendPrompt(prompt) {
+    for (let attempt = 0; attempt < 50; attempt++) {
       const composer =
         findComposer();
 
@@ -262,12 +232,12 @@
       ) {
         fillTextarea(
           composer,
-          DEMO_PROMPT
+          prompt
         );
       } else {
         fillContentEditable(
           composer,
-          DEMO_PROMPT
+          prompt
         );
       }
 
@@ -281,47 +251,85 @@
           ""
         ).trim();
 
-      if (
-        current.includes(
-          "Explain quantum computing"
-        )
-      ) {
-        console.log(
-          "[Router Demo] Prompt filled."
-        );
-
-        await sleep(500);
-
-        const sent =
-          await sendMessage(composer);
-
-        if (sent) {
-          try {
-            chrome.runtime.sendMessage({
-              type: "PROMPT_FILLED"
-            });
-          } catch {}
-
-          console.log(
-            "[Router Demo] Prompt sent."
-          );
-
-          return;
-        }
+      if (!current) {
+        await sleep(200);
+        continue;
       }
 
-      await sleep(250);
+      for (let i = 0; i < 30; i++) {
+        const send =
+          findSendButton(composer);
+
+        if (send) {
+          send.click();
+
+          return true;
+        }
+
+        await sleep(150);
+      }
+
+      composer.focus();
+
+      composer.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "Enter",
+          code: "Enter",
+          keyCode: 13,
+          which: 13,
+          bubbles: true,
+          cancelable: true
+        })
+      );
+
+      return true;
     }
 
-    try {
-      chrome.runtime.sendMessage({
-        type: "PROMPT_FAILED"
-      });
-    } catch {}
+    return false;
+  }
 
-    console.error(
-      "[Router Demo] Failed to fill/send."
-    );
+  async function run() {
+    try {
+      const prompt =
+        await getPrompt();
+
+      const sent =
+        await sendPrompt(prompt);
+
+      if (!sent) {
+        throw new Error(
+          "Could not send prompt."
+        );
+      }
+
+      if (jobId && jobToken) {
+        await chrome.runtime.sendMessage({
+          type: "MARK_ROUTER_JOB_SENT",
+          id: jobId,
+          token: jobToken
+        });
+      } else {
+        await chrome.runtime.sendMessage({
+          type: "PROMPT_SENT"
+        });
+      }
+
+      console.log(
+        "[Router Demo] Dynamic prompt sent:",
+        prompt
+      );
+    } catch (error) {
+      console.error(
+        "[Router Demo]",
+        error
+      );
+
+      try {
+        await chrome.runtime.sendMessage({
+          type: "PROMPT_FAILED"
+        });
+      } catch {}
+    }
   }
 
   void run();
