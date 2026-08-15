@@ -1,142 +1,206 @@
-(() => {
-  const STATE = {
-    lastUrl: location.href,
-    working: false,
-    lastAttemptAt: 0,
-  };
+﻿(() => {
+  let lastUrl = location.href;
+  let attempting = false;
+  let completedForNavigation = false;
 
-  const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
   function visible(el) {
     if (!el) return false;
-    const r = el.getBoundingClientRect();
-    const s = getComputedStyle(el);
-    return r.width > 0 && r.height > 0 && s.visibility !== 'hidden' && s.display !== 'none';
+    const rect = el.getBoundingClientRect();
+    const style = getComputedStyle(el);
+
+    return (
+      rect.width > 0 &&
+      rect.height > 0 &&
+      style.display !== "none" &&
+      style.visibility !== "hidden"
+    );
   }
 
-  function normalize(s) {
-    return (s || '').replace(/\s+/g, ' ').trim().toLowerCase();
+  function normalize(value) {
+    return (value || "")
+      .replace(/\s+/g, " ")
+      .trim()
+      .toLowerCase();
   }
 
-  function textOf(el) {
+  function label(el) {
     return normalize([
-      el.getAttribute?.('aria-label'),
-      el.getAttribute?.('title'),
-      el.textContent,
-    ].filter(Boolean).join(' '));
+      el.getAttribute?.("aria-label"),
+      el.getAttribute?.("title"),
+      el.textContent
+    ].filter(Boolean).join(" "));
   }
 
-  function allClickable() {
-    return [...document.querySelectorAll('button,[role="button"],[role="menuitem"],[role="option"]')]
-      .filter(visible);
+  function clickableElements() {
+    return [
+      ...document.querySelectorAll(
+        'button,[role="button"],[role="menuitem"],[role="option"]'
+      )
+    ].filter(visible);
   }
 
-  function findClickable(matchers) {
-    return allClickable().find((el) => {
-      const text = textOf(el);
-      return matchers.some((m) => m.test(text));
+  function findByPatterns(patterns) {
+    return clickableElements().find(el => {
+      const text = label(el);
+      return patterns.some(pattern => pattern.test(text));
     });
   }
 
-  function looksLikeNewChat() {
-    const p = location.pathname.replace(/\/+$/, '') || '/';
-    // Chat pages currently use /c/<id>. New-chat landing pages are normally /.
-    return p === '/' || !/^\/c\//.test(p);
+  function isNewChatPage() {
+    const path = location.pathname.replace(/\/+$/, "") || "/";
+    return path === "/";
   }
 
-  function temporaryLooksEnabled() {
-    const candidates = allClickable();
-    return candidates.some((el) => {
-      const t = textOf(el);
-      const pressed = el.getAttribute('aria-pressed');
-      const checked = el.getAttribute('aria-checked');
-      return /temporary( chat)?/.test(t) &&
-        (pressed === 'true' || checked === 'true' || /temporary chat on|temporary enabled|disable temporary/.test(t));
+  function appearsEnabled() {
+    return clickableElements().some(el => {
+      const text = label(el);
+      const pressed = el.getAttribute("aria-pressed");
+      const checked = el.getAttribute("aria-checked");
+
+      return (
+        /temporary/.test(text) &&
+        (
+          pressed === "true" ||
+          checked === "true" ||
+          /temporary chat on/.test(text) ||
+          /temporary enabled/.test(text) ||
+          /disable temporary/.test(text)
+        )
+      );
     });
   }
 
-  async function tryEnableTemporary() {
-    if (STATE.working || !looksLikeNewChat()) return;
+  async function report(type) {
+    try {
+      await chrome.runtime.sendMessage({ type });
+    } catch {}
+  }
 
-    const settings = await chrome.storage.sync.get({ autoTemporary: true });
-    if (!settings.autoTemporary) return;
+  async function enableTemporary() {
+    if (attempting || completedForNavigation || !isNewChatPage()) return;
 
-    const now = Date.now();
-    if (now - STATE.lastAttemptAt < 1200) return;
-    STATE.lastAttemptAt = now;
-    STATE.working = true;
+    const state = await chrome.storage.local.get({
+      autoTemporaryRequested: false
+    });
+
+    /*
+      Also auto-enable whenever the user manually reaches a fresh New Chat.
+      This satisfies the non-functional requirement that NEW CHAT defaults
+      to Temporary mode.
+    */
+    attempting = true;
 
     try {
-      if (temporaryLooksEnabled()) return;
-
-      // Strategy 1: Temporary is directly exposed as a button/toggle.
-      let target = findClickable([
-        /^temporary chat$/,
-        /^temporary$/,
-        /start temporary chat/,
-        /enable temporary/,
-      ]);
-      if (target) {
-        target.click();
-        await sleep(250);
+      if (appearsEnabled()) {
+        completedForNavigation = true;
+        await report("TEMPORARY_OK");
         return;
       }
 
-      // Strategy 2: open the model/chat-mode picker, then click Temporary.
-      const opener = findClickable([
-        /model selector/,
-        /select model/,
-        /chat mode/,
-        /^chatgpt\b/,
-      ]);
-
-      if (opener) {
-        opener.click();
-        await sleep(250);
-
-        target = findClickable([
-          /^temporary chat$/,
+      for (let round = 0; round < 20; round++) {
+        let temporary = findByPatterns([
           /^temporary$/,
+          /^temporary chat$/,
           /start temporary chat/,
-          /enable temporary/,
+          /enable temporary chat/,
+          /turn on temporary/,
+          /temporary mode/
         ]);
-        if (target) {
-          target.click();
-          await sleep(250);
+
+        if (temporary) {
+          temporary.click();
+          await sleep(500);
+
+          completedForNavigation = true;
+          await report("TEMPORARY_OK");
           return;
         }
 
-        // Close the picker if we opened it but did not find Temporary.
-        document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+        /*
+          Some ChatGPT layouts place Temporary inside the model/mode menu.
+        */
+        const picker = findByPatterns([
+          /model selector/,
+          /select model/,
+          /chat mode/,
+          /^chatgpt$/,
+          /^chatgpt \d/,
+          /choose model/
+        ]);
+
+        if (picker) {
+          picker.click();
+          await sleep(250);
+
+          temporary = findByPatterns([
+            /^temporary$/,
+            /^temporary chat$/,
+            /start temporary chat/,
+            /enable temporary chat/,
+            /turn on temporary/
+          ]);
+
+          if (temporary) {
+            temporary.click();
+            await sleep(500);
+
+            completedForNavigation = true;
+            await report("TEMPORARY_OK");
+            return;
+          }
+
+          document.dispatchEvent(
+            new KeyboardEvent("keydown", {
+              key: "Escape",
+              bubbles: true
+            })
+          );
+        }
+
+        await sleep(300);
+      }
+
+      if (state.autoTemporaryRequested) {
+        await report("TEMPORARY_FAILED");
       }
     } finally {
-      STATE.working = false;
+      attempting = false;
     }
   }
 
-  // SPA navigation does not reload the content script, so watch DOM + URL.
-  const observer = new MutationObserver(() => {
-    if (location.href !== STATE.lastUrl) {
-      STATE.lastUrl = location.href;
+  function navigationChanged() {
+    if (location.href !== lastUrl) {
+      lastUrl = location.href;
+      completedForNavigation = false;
     }
-    void tryEnableTemporary();
+
+    void enableTemporary();
+  }
+
+  const observer = new MutationObserver(navigationChanged);
+
+  observer.observe(document.documentElement, {
+    childList: true,
+    subtree: true
   });
 
-  observer.observe(document.documentElement, { childList: true, subtree: true });
-
-  // Patch history to react quickly to New Chat navigation.
-  for (const method of ['pushState', 'replaceState']) {
+  for (const method of ["pushState", "replaceState"]) {
     const original = history[method];
+
     history[method] = function (...args) {
       const result = original.apply(this, args);
-      queueMicrotask(() => void tryEnableTemporary());
+
+      queueMicrotask(navigationChanged);
+
       return result;
     };
   }
-  addEventListener('popstate', () => void tryEnableTemporary());
 
-  // Initial and delayed attempts for hydrated UI.
-  void tryEnableTemporary();
-  setTimeout(() => void tryEnableTemporary(), 800);
-  setTimeout(() => void tryEnableTemporary(), 2000);
+  addEventListener("popstate", navigationChanged);
+
+  void enableTemporary();
+  setTimeout(() => void enableTemporary(), 700);
+  setTimeout(() => void enableTemporary(), 1500);
 })();
