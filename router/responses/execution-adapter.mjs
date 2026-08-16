@@ -1,41 +1,12 @@
-﻿import {
+import {
   backendUnavailable,
   invalidRequest,
   requestTimeout
 } from "./error-mapper.mjs";
 
-function containsAttachments(
-  items
-) {
-  return items.some(
-    item => {
-      if (
-        item.kind === "message"
-      ) {
-        return item.content.some(
-          part =>
-            part.kind ===
-            "attachment"
-        );
-      }
-
-      if (
-        item.kind ===
-          "function_call_output" &&
-        item.output.kind ===
-          "content"
-      ) {
-        return item.output.content.some(
-          part =>
-            part.kind ===
-            "attachment"
-        );
-      }
-
-      return false;
-    }
-  );
-}
+import {
+  collectBrowserAttachments
+} from "./attachment-adapter.mjs";
 
 function renderMessages(items) {
   return items
@@ -51,8 +22,7 @@ function renderMessages(items) {
           item.content
             .filter(
               part =>
-                part.kind ===
-                "text"
+                part.kind === "text"
             )
             .map(
               part =>
@@ -67,30 +37,14 @@ function renderMessages(items) {
     .join("\n\n");
 }
 
-export function buildBrowserExecutionInput(
+export function buildBrowserExecutionRequest(
   normalized
 ) {
-  if (
-    containsAttachments(
-      normalized.input
-    ) ||
-    containsAttachments(
-      normalized.instructions
-        ?.items ?? []
-    )
-  ) {
-    throw invalidRequest(
-      "Image/file execution is not enabled in Phase 1. The request was normalized successfully, but the current browser execution adapter is text-only.",
-      "input",
-      "attachment_execution_not_implemented"
-    );
-  }
-
   if (
     normalized.tools.length > 0
   ) {
     throw invalidRequest(
-      "Tool execution is not enabled in Phase 1.",
+      "Tool execution is not enabled until Phase 4.",
       "tools",
       "tool_execution_not_implemented"
     );
@@ -104,7 +58,7 @@ export function buildBrowserExecutionInput(
     )
   ) {
     throw invalidRequest(
-      "function_call_output execution is not enabled in Phase 1.",
+      "function_call_output execution is not enabled until Phase 4.",
       "input",
       "function_call_output_not_implemented"
     );
@@ -129,9 +83,42 @@ export function buildBrowserExecutionInput(
     )
   );
 
-  return sections
-    .filter(Boolean)
-    .join("\n\n");
+  const input =
+    sections
+      .filter(Boolean)
+      .join("\n\n");
+
+  const attachments =
+    collectBrowserAttachments(
+      normalized
+    );
+
+  if (
+    !input &&
+    attachments.length === 0
+  ) {
+    throw invalidRequest(
+      "The request contains no executable text or attachments.",
+      "input"
+    );
+  }
+
+  return {
+    input,
+    attachments
+  };
+}
+
+/*
+  Kept for compatibility with code that
+  only needs the final text representation.
+*/
+export function buildBrowserExecutionInput(
+  normalized
+) {
+  return buildBrowserExecutionRequest(
+    normalized
+  ).input;
 }
 
 export async function executeNormalizedRequest(
@@ -139,24 +126,27 @@ export async function executeNormalizedRequest(
   {
     fetchImpl =
       globalThis.fetch,
+
     browserRunUrl =
       "http://127.0.0.1:8788/browser/run",
+
     healthUrl =
       "http://127.0.0.1:8788/health",
-    timeoutMs = 300000
+
+    timeoutMs =
+      300000
   } = {}
 ) {
   if (
-    typeof fetchImpl !==
-      "function"
+    typeof fetchImpl !== "function"
   ) {
     throw backendUnavailable(
       "No fetch implementation is available."
     );
   }
 
-  const input =
-    buildBrowserExecutionInput(
+  const executionRequest =
+    buildBrowserExecutionRequest(
       normalized
     );
 
@@ -212,17 +202,26 @@ export async function executeNormalizedRequest(
       await fetchImpl(
         browserRunUrl,
         {
-          method: "POST",
+          method:
+            "POST",
+
           headers: {
             "content-type":
               "application/json"
           },
+
           body:
             JSON.stringify({
-              input,
+              input:
+                executionRequest.input,
+
+              attachments:
+                executionRequest.attachments,
+
               timeout_ms:
                 timeoutMs
             }),
+
           signal:
             controller.signal
         }
@@ -269,10 +268,12 @@ export async function executeNormalizedRequest(
     return {
       output_text:
         payload.output_text,
+
       backend_job_id:
         payload.id ??
         payload.job_id ??
         null,
+
       model_selection_verified:
         false
     };

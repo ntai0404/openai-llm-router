@@ -91,7 +91,7 @@ function extractText(input) {
   return parts.join("\n").trim();
 }
 
-function createJob(prompt) {
+function createJob(prompt, attachments = []) {
   const id = crypto.randomUUID();
 
   const token =
@@ -101,6 +101,7 @@ function createJob(prompt) {
     id,
     token,
     prompt,
+    attachments,
     status: "queued",
     createdAt: Date.now(),
     dispatchedAt: null,
@@ -147,7 +148,8 @@ function dispatchNext() {
         job: {
           id: job.id,
           token: job.token,
-          prompt: job.prompt
+          prompt: job.prompt,
+          attachments: job.attachments
         }
       })
     );
@@ -291,6 +293,7 @@ const server =
 
         let body;
         let prompt;
+        let attachments = [];
 
         try {
           body = await readJson(req);
@@ -298,6 +301,25 @@ const server =
           prompt = extractText(
             body.input ?? body.prompt
           );
+
+          if (
+            isBrowserRun &&
+            body.attachments !== undefined
+          ) {
+            if (
+              !Array.isArray(
+                body.attachments
+              )
+            ) {
+              return json(res, 400, {
+                error:
+                  "attachments must be an array."
+              });
+            }
+
+            attachments =
+              body.attachments;
+          }
         } catch (error) {
           return json(res, 400, {
             ...(isBrowserRun
@@ -307,12 +329,16 @@ const server =
           });
         }
 
-        if (!prompt) {
+        if (
+          !prompt &&
+          attachments.length === 0
+        ) {
           return json(res, 400, {
             ...(isBrowserRun
               ? {}
               : { ok: false }),
-            error: "Prompt is required."
+            error:
+              "Prompt or attachment is required."
           });
         }
 
@@ -339,7 +365,12 @@ const server =
         }
 
         const job =
-          createJob(prompt);
+          createJob(
+            prompt,
+            isBrowserRun
+              ? attachments
+              : []
+          );
 
         await waitForJob(
           job,
