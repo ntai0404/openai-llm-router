@@ -73,7 +73,7 @@ function renderItems(
     .join("\n\n");
 }
 
-export function buildBrowserExecutionRequest(
+function buildBrowserExecutionRequestBase(
   normalized,
   options = {}
 ) {
@@ -136,6 +136,59 @@ export function buildBrowserExecutionRequest(
     tool_protocol:
       toolProtocol
   };
+}
+
+
+/*
+  DOM-safe tool transport wrapper.
+
+  Important:
+  - forward every original argument unchanged;
+  - do not infer tool execution merely from tools.length;
+  - append only when the existing tool adapter actually emitted
+    a ROUTER_TOOL_V1 protocol envelope instruction.
+*/
+export function buildBrowserExecutionRequest(
+  ...args
+) {
+  const request =
+    buildBrowserExecutionRequestBase(
+      ...args
+    );
+
+  const hasToolProtocol =
+    typeof request?.input === "string" &&
+    request.input.includes(
+      "ROUTER_TOOL_V1_BEGIN_"
+    );
+
+  if (hasToolProtocol) {
+    const transport =
+      [
+        "[router_dom_transport]",
+        "ROUTER_DOM_TRANSPORT_WRAPPER_V2",
+        "This is the FINAL formatting and transport instruction.",
+        "This final transport instruction overrides any earlier instruction that says not to use a code fence, but changes no other tool protocol rule.",
+        "Render the ENTIRE ROUTER_TOOL_V1 response inside exactly one fenced code block.",
+        "Use a fenced code block with language text.",
+        "The ROUTER_TOOL_V1_BEGIN marker, JSON payload, and matching ROUTER_TOOL_V1_END marker must all be inside the same fenced code block.",
+        "Do not emit prose outside the fenced code block.",
+        "Inside the fenced code block, emit strict JSON accepted directly by JSON.parse.",
+        "Preserve JSON backslashes literally in rendered browser text.",
+        "Any double quote inside a JSON string value must remain JSON-escaped as backslash-double-quote.",
+        "[/router_dom_transport]"
+      ].join("\n");
+
+    request.input =
+      [
+        request.input,
+        transport
+      ]
+        .filter(Boolean)
+        .join("\n\n");
+  }
+
+  return request;
 }
 
 export function buildBrowserExecutionInput(
