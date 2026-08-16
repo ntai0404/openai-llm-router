@@ -8,29 +8,55 @@ import {
   collectBrowserAttachments
 } from "./attachment-adapter.mjs";
 
-function renderMessages(items) {
+import {
+  buildToolProtocol,
+  parseToolProtocolOutput,
+  renderFunctionCallOutput
+} from "./tool-call-adapter.mjs";
+
+function renderMessage(item) {
+  const text =
+    item.content
+      .filter(
+        part =>
+          part.kind === "text"
+      )
+      .map(
+        part =>
+          part.text
+      )
+      .join("\n");
+
+  return `[${item.role}]\n${text}`;
+}
+
+function renderItems(
+  items,
+  rootParam
+) {
   return items
     .map(
-      item => {
+      (item, index) => {
         if (
-          item.kind !== "message"
+          item.kind ===
+          "message"
         ) {
-          return null;
+          return renderMessage(
+            item
+          );
         }
 
-        const text =
-          item.content
-            .filter(
-              part =>
-                part.kind === "text"
-            )
-            .map(
-              part =>
-                part.text
-            )
-            .join("\n");
+        if (
+          item.kind ===
+          "function_call_output"
+        ) {
+          return renderFunctionCallOutput(
+            item,
+            `${rootParam}[${index}]`
+          );
+        }
 
-        return `[${item.role}]\n${text}`;
+        return null;
       }
     )
     .filter(Boolean)
@@ -38,32 +64,9 @@ function renderMessages(items) {
 }
 
 export function buildBrowserExecutionRequest(
-  normalized
+  normalized,
+  options = {}
 ) {
-  if (
-    normalized.tools.length > 0
-  ) {
-    throw invalidRequest(
-      "Tool execution is not enabled until Phase 4.",
-      "tools",
-      "tool_execution_not_implemented"
-    );
-  }
-
-  if (
-    normalized.input.some(
-      item =>
-        item.kind ===
-        "function_call_output"
-    )
-  ) {
-    throw invalidRequest(
-      "function_call_output execution is not enabled until Phase 4.",
-      "input",
-      "function_call_output_not_implemented"
-    );
-  }
-
   const sections = [];
 
   if (
@@ -71,17 +74,31 @@ export function buildBrowserExecutionRequest(
       ?.items?.length
   ) {
     sections.push(
-      renderMessages(
-        normalized.instructions.items
+      renderItems(
+        normalized.instructions.items,
+        "instructions"
       )
     );
   }
 
   sections.push(
-    renderMessages(
-      normalized.input
+    renderItems(
+      normalized.input,
+      "input"
     )
   );
+
+  const toolProtocol =
+    buildToolProtocol(
+      normalized,
+      options.toolProtocol ?? {}
+    );
+
+  if (toolProtocol) {
+    sections.push(
+      toolProtocol.prompt
+    );
+  }
 
   const input =
     sections
@@ -105,20 +122,39 @@ export function buildBrowserExecutionRequest(
 
   return {
     input,
-    attachments
+    attachments,
+    tool_protocol:
+      toolProtocol
   };
 }
 
-/*
-  Kept for compatibility with code that
-  only needs the final text representation.
-*/
 export function buildBrowserExecutionInput(
   normalized
 ) {
   return buildBrowserExecutionRequest(
     normalized
   ).input;
+}
+
+function backendErrorMessage(
+  payload,
+  fallback
+) {
+  if (
+    typeof payload?.error ===
+    "string"
+  ) {
+    return payload.error;
+  }
+
+  if (
+    typeof payload?.error?.message ===
+    "string"
+  ) {
+    return payload.error.message;
+  }
+
+  return fallback;
 }
 
 export async function executeNormalizedRequest(
@@ -134,11 +170,15 @@ export async function executeNormalizedRequest(
       "http://127.0.0.1:8788/health",
 
     timeoutMs =
-      300000
+      300000,
+
+    toolProtocol =
+      {}
   } = {}
 ) {
   if (
-    typeof fetchImpl !== "function"
+    typeof fetchImpl !==
+    "function"
   ) {
     throw backendUnavailable(
       "No fetch implementation is available."
@@ -147,7 +187,10 @@ export async function executeNormalizedRequest(
 
   const executionRequest =
     buildBrowserExecutionRequest(
-      normalized
+      normalized,
+      {
+        toolProtocol
+      }
     );
 
   const controller =
@@ -241,23 +284,28 @@ export async function executeNormalizedRequest(
 
     if (!response.ok) {
       if (
-        response.status === 504
+        response.status ===
+        504
       ) {
         throw requestTimeout(
-          payload?.error ||
-          "Execution backend timed out."
+          backendErrorMessage(
+            payload,
+            "Execution backend timed out."
+          )
         );
       }
 
       throw backendUnavailable(
-        payload?.error ||
-        `Execution backend failed with HTTP ${response.status}.`
+        backendErrorMessage(
+          payload,
+          `Execution backend failed with HTTP ${response.status}.`
+        )
       );
     }
 
     if (
       typeof payload?.output_text !==
-        "string"
+      "string"
     ) {
       throw backendUnavailable(
         "Execution backend response did not contain output_text.",
@@ -265,9 +313,21 @@ export async function executeNormalizedRequest(
       );
     }
 
+    const parsed =
+      executionRequest.tool_protocol
+        ? parseToolProtocolOutput(
+            payload.output_text,
+            executionRequest.tool_protocol
+          )
+        : {
+            kind:
+              "message",
+            output_text:
+              payload.output_text
+          };
+
     return {
-      output_text:
-        payload.output_text,
+      ...parsed,
 
       backend_job_id:
         payload.id ??
