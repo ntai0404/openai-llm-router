@@ -14,7 +14,7 @@ if (-not (Test-Path $__routerInstallState)) {
     } catch {
       throw "Existing provider config is invalid JSON; setup left it unchanged."
     }
-    $alreadyManaged = ($existingProvider.installer_managed -eq $true)
+    $alreadyManaged = (($existingProvider.PSObject.Properties.Name -contains "installer_managed") -and ($existingProvider.PSObject.Properties["installer_managed"].Value -eq $true))
   }
   if ($hadPreexisting -and -not $alreadyManaged) {
     Copy-Item $__routerInstallProvider $__routerInstallBackup -Force
