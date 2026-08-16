@@ -1,6 +1,9 @@
-﻿import http from "node:http";
+import http from "node:http";
 import crypto from "node:crypto";
 import { WebSocketServer, WebSocket } from "ws";
+import { handleResponsesRoute } from "./responses/responses-router.mjs";
+
+try { process.loadEnvFile?.(); } catch {}
 
 const HOST = "127.0.0.1";
 const PORT = 8788;
@@ -248,6 +251,14 @@ const server =
         return res.end();
       }
 
+      if (
+        await handleResponsesRoute(
+          req,
+          res
+        )
+      ) {
+        return;
+      }
       if (
         req.method === "GET" &&
         req.url === "/health"
@@ -706,4 +717,3 @@ server.listen(
     );
   }
 );
-
