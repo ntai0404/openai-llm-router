@@ -806,6 +806,48 @@ async function runBrowserJob(job) {
       tab
     );
 
+  /* ROUTER_WORKER_FOCUS_V1
+     ChatGPT Web can stop advancing rendered DOM while this
+     dedicated worker window is not focused.
+  */
+  await chrome.tabs.update(
+    tab.id,
+    {
+      active: true,
+      autoDiscardable: false,
+      pinned: false
+    }
+  );
+
+  await chrome.windows.update(
+    tab.windowId,
+    {
+      focused: true
+    }
+  );
+
+  await sleep(250);
+
+  const focusedWorkerWindow =
+    await chrome.windows.get(tab.windowId);
+
+  tab = await chrome.tabs.get(tab.id);
+
+  if (
+    !focusedWorkerWindow.focused ||
+    !tab.active ||
+    tab.discarded
+  ) {
+    throw new Error(
+      "Dedicated worker could not enter focused execution state."
+    );
+  }
+
+  console.log(
+    "[Router] worker focused for execution",
+    { tabId: tab.id, windowId: tab.windowId }
+  );
+
   const url =
     TEMP_BASE +
     "&router-run=" +
