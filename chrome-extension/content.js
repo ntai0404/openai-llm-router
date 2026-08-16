@@ -1041,7 +1041,30 @@
     return true;
   }
 
-  async function waitForResponse() {
+  function expectedToolProtocolEndMarker(
+    prompt
+  ) {
+    const match =
+      String(
+        prompt ?? ""
+      ).match(
+        /ROUTER_TOOL_V1_END_[A-Za-z0-9_-]+/
+      );
+
+    return (
+      match?.[0] ??
+      null
+    );
+  }
+
+  async function waitForResponse(
+    prompt = ""
+  ) {
+    const expectedEndMarker =
+      expectedToolProtocolEndMarker(
+        prompt
+      );
+
     let lastText = "";
     let stableCount = 0;
 
@@ -1065,7 +1088,37 @@
           stableCount = 0;
         }
 
-        if (
+        /*
+          Structured tool responses have a unique
+          nonce-delimited END marker in the prompt.
+
+          Do not trust generic "generation stopped"
+          UI detection while that marker is still
+          missing: ChatGPT can temporarily leave a
+          partially-rendered marker stable long enough
+          for the old polling logic to return it.
+        */
+        if (expectedEndMarker) {
+          if (
+            text.includes(
+              expectedEndMarker
+            ) &&
+            stableCount >= 3
+          ) {
+            return text;
+          }
+          /*
+            For structured tool output, completion is
+            deterministic: the exact nonce END marker
+            must appear. Do not return a stable partial
+            response just because rendering pauses.
+
+            If the model never emits the marker, the
+            normal overall response timeout will report
+            the failure instead of sending truncated
+            structured data to the strict parser.
+          */
+        } else if (
           stableCount >= 4 &&
           !isGenerating()
         ) {
@@ -1116,7 +1169,7 @@
       }
 
       const response =
-        await waitForResponse();
+        await waitForResponse(job.prompt);
 
       const result =
         await chrome.runtime.sendMessage(

@@ -912,14 +912,14 @@ export function buildToolProtocol(
     );
 
   let choiceInstruction =
-    "You may either answer normally or call one or more functions.";
+    "You may either answer normally or emit one or more function-call requests for the external router.";
 
   if (
     choice.mode ===
     "required"
   ) {
     choiceInstruction =
-      "You MUST call at least one function.";
+      "You MUST emit at least one function-call request for the external router.";
   }
 
   if (
@@ -927,7 +927,7 @@ export function buildToolProtocol(
     "specific"
   ) {
     choiceInstruction =
-      `You MUST call function "${choice.name}".`;
+      `You MUST emit a function-call request selecting function "${choice.name}" for the external router.`;
   }
 
   const parallelInstruction =
@@ -949,11 +949,15 @@ export function buildToolProtocol(
     "Normal message JSON:",
     '{"type":"message","text":"answer"}',
     "",
-    "Function call JSON:",
+    "External-router function request JSON:",
     '{"type":"function_calls","calls":[{"name":"function_name","arguments":{"key":"value"}}]}',
     "",
     "arguments must be a JSON object.",
     "Never invent a function name.",
+    "The listed functions are available to the EXTERNAL ROUTER. They are not native tools of this ChatGPT page.",
+    "Do NOT try to execute a function yourself.",
+    "Do NOT say that a listed function is unavailable.",
+    "A function_calls JSON object means: request that the external router execute the selected function.",
     choiceInstruction,
     parallelInstruction,
     `tool_choice=${JSON.stringify(choice)}`,

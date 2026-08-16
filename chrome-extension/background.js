@@ -1,4 +1,4 @@
-﻿const WS_URL = "ws://127.0.0.1:8788/extension";
+const WS_URL = "ws://127.0.0.1:8788/extension";
 const HTTP_BASE = "http://127.0.0.1:8788";
 const PARK_URL = chrome.runtime.getURL("worker.html");
 const TEMP_BASE = "https://chatgpt.com/?temporary-chat=true&router-worker=1";
@@ -142,7 +142,26 @@ async function ensureWorkerTab() {
           ""
         )
       ) {
-        return tab;
+        if (tab.discarded) {
+          console.log(
+            "[Router] replacing discarded worker",
+            workerTabId
+          );
+
+          try {
+            await chrome.tabs.remove(
+              workerTabId
+            );
+          } catch {}
+
+          workerTabId = null;
+
+          await chrome.storage.local.remove(
+            "workerTabId"
+          );
+        } else {
+          return tab;
+        }
       }
     } catch {}
 
@@ -361,12 +380,13 @@ async function parkWorker() {
 
   try {
     const tab = await chrome.tabs.get(workerTabId);
+    /*
+      Keep the inactive worker loaded between jobs.
+      Discarding it prevents reliable background
+      navigation until Chrome activates the tab.
+    */
 
-    if (!tab.active) {
-      await chrome.tabs.discard(workerTabId).catch(() => {});
-    }
-
-    console.log("[Router] worker idle/discarded", workerTabId);
+    console.log("[Router] worker idle/kept loaded", workerTabId);
 
     await chrome.alarms.create(
       IDLE_ALARM,

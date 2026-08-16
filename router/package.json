@@ -13,5 +13,8 @@
   },
   "dependencies": {
     "ws": "^8.21.3"
+  },
+  "devDependencies": {
+    "openai": "7.4.0"
   }
 }
