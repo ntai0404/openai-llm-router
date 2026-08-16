@@ -1,9 +1,0 @@
-# Put in ~/.codex/config.toml or merge into your existing file.
-model = "gpt-5.6-terra"
-model_provider = "local_responses_router"
-
-[model_providers.local_responses_router]
-name = "Local Responses Router"
-base_url = "http://127.0.0.1:8787/v1"
-env_key = "CODEX_ROUTER_API_KEY"
-wire_api = "responses"
