@@ -9,6 +9,7 @@ let socket = null;
 let reconnectTimer = null;
 let keepAliveTimer = null;
 let idleCloseTimer = null;
+let workerParkGeneration = 0;
 
 let workerTabId = null;
 let workerWindowId = null;
@@ -373,6 +374,24 @@ async function closeIdleWorker() {
 }
 
 async function parkWorker() {
+  /* ROUTER_WORKER_PARK_RACE_V2
+     Do not let stale post-job parking steal focus from a new job.
+  */
+  const parkGeneration = workerParkGeneration;
+
+  await sleep(750);
+
+  if (
+    workerBusy ||
+    pendingJobs.length ||
+    parkGeneration !== workerParkGeneration
+  ) {
+    console.log(
+      "[Router] stale park cancelled by new work"
+    );
+    return;
+  }
+
   await chrome.alarms.clear(IDLE_ALARM).catch(() => {});
 
   if (!workerTabId) return;
@@ -479,6 +498,7 @@ function connectSocket() {
         pendingJobs.push(
           message.job
         );
+    workerParkGeneration += 1;
       }
 
       void pumpQueue();
@@ -807,8 +827,8 @@ async function runBrowserJob(job) {
     );
 
   /* ROUTER_WORKER_FOCUS_V1
-     ChatGPT Web can stop advancing rendered DOM while this
-     dedicated worker window is not focused.
+     Keep ChatGPT Web foreground-renderable while executing.
+     Retry because Chrome window focus transitions are asynchronous.
   */
   await chrome.tabs.update(
     tab.id,
@@ -819,22 +839,32 @@ async function runBrowserJob(job) {
     }
   );
 
-  await chrome.windows.update(
-    tab.windowId,
-    {
-      focused: true
+  let focusedWorkerWindow = null;
+
+  for (let attempt = 0; attempt < 8; attempt += 1) {
+    await chrome.windows.update(
+      tab.windowId,
+      { focused: true }
+    );
+
+    await sleep(250);
+
+    focusedWorkerWindow =
+      await chrome.windows.get(tab.windowId);
+
+    tab = await chrome.tabs.get(tab.id);
+
+    if (
+      focusedWorkerWindow.focused &&
+      tab.active &&
+      !tab.discarded
+    ) {
+      break;
     }
-  );
-
-  await sleep(250);
-
-  const focusedWorkerWindow =
-    await chrome.windows.get(tab.windowId);
-
-  tab = await chrome.tabs.get(tab.id);
+  }
 
   if (
-    !focusedWorkerWindow.focused ||
+    !focusedWorkerWindow?.focused ||
     !tab.active ||
     tab.discarded
   ) {
