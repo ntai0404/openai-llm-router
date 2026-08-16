@@ -1,4 +1,31 @@
-﻿$ErrorActionPreference="Stop"
+
+# ROUTER_PREEXISTING_CONFIG_V1
+$__routerInstallStateDir = Join-Path $env:LOCALAPPDATA "OpenAIResponsesRouter"
+$__routerInstallProvider = Join-Path $__routerInstallStateDir "provider.json"
+$__routerInstallBackup = Join-Path $__routerInstallStateDir "provider.preinstall.json"
+$__routerInstallState = Join-Path $__routerInstallStateDir "provider.install-state.json"
+New-Item $__routerInstallStateDir -ItemType Directory -Force | Out-Null
+if (-not (Test-Path $__routerInstallState)) {
+  $hadPreexisting = Test-Path $__routerInstallProvider
+  $alreadyManaged = $false
+  if ($hadPreexisting) {
+    try {
+      $existingProvider = Get-Content $__routerInstallProvider -Raw | ConvertFrom-Json
+    } catch {
+      throw "Existing provider config is invalid JSON; setup left it unchanged."
+    }
+    $alreadyManaged = ($existingProvider.installer_managed -eq $true)
+  }
+  if ($hadPreexisting -and -not $alreadyManaged) {
+    Copy-Item $__routerInstallProvider $__routerInstallBackup -Force
+    $state = [ordered]@{ version = 1; had_preexisting = $true }
+  } else {
+    Remove-Item $__routerInstallBackup -Force -ErrorAction SilentlyContinue
+    $state = [ordered]@{ version = 1; had_preexisting = $false }
+  }
+  [IO.File]::WriteAllText($__routerInstallState, ($state | ConvertTo-Json -Compress), [Text.UTF8Encoding]::new($false))
+}
+$ErrorActionPreference="Stop"
 . "$PSScriptRoot\scripts\router-common.ps1"
 Write-Host ""
 Write-Host "Local Responses Provider Setup"
