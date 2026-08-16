@@ -1,20 +1,20 @@
 {
-  "name": "codex-responses-router",
-  "version": "1.0.0",
-  "private": true,
-  "type": "module",
-  "engines": {
-    "node": ">=20"
-  },
-  "scripts": {
-    "start": "node --env-file=.env server.mjs",
-    "check": "node --check server.mjs && node --check demo-browser-bridge.mjs",
-    "demo": "node demo-browser-bridge.mjs"
-  },
-  "dependencies": {
-    "ws": "^8.21.3"
-  },
-  "devDependencies": {
-    "openai": "7.4.0"
-  }
+    "name":  "codex-responses-router",
+    "version":  "1.0.1",
+    "private":  true,
+    "type":  "module",
+    "engines":  {
+                    "node":  "\u003e=20"
+                },
+    "scripts":  {
+                    "start":  "node --env-file=.env server.mjs",
+                    "check":  "node --check server.mjs \u0026\u0026 node --check demo-browser-bridge.mjs",
+                    "demo":  "node demo-browser-bridge.mjs"
+                },
+    "dependencies":  {
+                         "ws":  "^8.21.3"
+                     },
+    "devDependencies":  {
+                            "openai":  "7.4.0"
+                        }
 }

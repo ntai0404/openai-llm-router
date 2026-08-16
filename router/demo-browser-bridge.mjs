@@ -8,9 +8,45 @@ try { process.loadEnvFile?.(); } catch {}
 const HOST = "127.0.0.1";
 const PORT = 8788;
 const RUN_TIMEOUT_MS = 300000;
-const ROUTER_VERSION = "1.0.0";
+const ROUTER_VERSION = "1.0.1";
 const PROTOCOL_VERSION = "responses-v1";
 /* ROUTER_HEALTH_METADATA_V1 */
+
+/* ROUTER_DEBUG_V1
+   Opt-in diagnostic logging. Never log request/response content,
+   credentials, authorization values, tokens, or attachment bytes.
+*/
+const ROUTER_DEBUG =
+  process.env.ROUTER_DEBUG === "1";
+
+function routerDebug(event, details = {}) {
+  if (!ROUTER_DEBUG) {
+    return;
+  }
+
+  const safe = {};
+
+  for (const [key, value] of
+    Object.entries(details)) {
+    if (
+      /authorization|api.?key|token|secret|credential|prompt|content|attachment_data/i.test(key)
+    ) {
+      safe[key] = "[redacted]";
+      continue;
+    }
+
+    safe[key] = value;
+  }
+
+  console.log(
+    "[RouterDebug]",
+    JSON.stringify({
+      event,
+      at: new Date().toISOString(),
+      ...safe
+    })
+  );
+}
 
 const jobs = new Map();
 
@@ -116,6 +152,18 @@ function createJob(prompt, attachments = []) {
   };
 
   jobs.set(id, job);
+  routerDebug("job_created", {
+    job_id: job.id,
+    request_chars:
+      typeof prompt === "string"
+        ? prompt.length
+        : 0,
+    attachment_count:
+      Array.isArray(attachments)
+        ? attachments.length
+        : 0,
+    queue_depth: queuedJobs().length
+  });
 
   dispatchNext();
 
@@ -144,6 +192,12 @@ function dispatchNext() {
   activeJobId = job.id;
   job.status = "dispatched";
   job.dispatchedAt = Date.now();
+  routerDebug("job_dispatched", {
+    job_id: job.id,
+    queue_depth: queuedJobs().length,
+    queue_wait_ms:
+      job.dispatchedAt - job.createdAt
+  });
 
   try {
     extensionSocket.send(
@@ -523,6 +577,13 @@ const server =
 
         job.sentAt =
           Date.now();
+        routerDebug("job_sent", {
+          job_id: job.id,
+          dispatch_ms:
+            job.sentAt - job.dispatchedAt,
+          total_ms:
+            job.sentAt - job.createdAt
+        });
 
         return json(res, 200, {
           ok: true,
@@ -581,6 +642,15 @@ const server =
 
         job.completedAt =
           Date.now();
+        routerDebug("job_completed", {
+          job_id: job.id,
+          total_ms:
+            job.completedAt - job.createdAt,
+          response_chars:
+            typeof job.response === "string"
+              ? job.response.length
+              : 0
+        });
 
         releaseJob(job);
 
