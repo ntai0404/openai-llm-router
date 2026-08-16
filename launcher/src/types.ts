@@ -15,6 +15,7 @@ export interface LauncherState {
   sidebarWidth: number;
   browserSmokePassed?: boolean;
   browserSmokeVersion?: string | null;
+  browserSmokeLifecycleId?: string | null;
   coreSetupComplete?: boolean;
   codexCatalogVerified?: boolean;
   mcpSetupComplete?: boolean;

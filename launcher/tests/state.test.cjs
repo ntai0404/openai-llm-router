@@ -27,6 +27,7 @@ test("launcher state persists onboarding, language, and autostart atomically", (
       showBrowserDuringTurns: true,
       browserSmokePassed: false,
       browserSmokeVersion: null,
+      browserSmokeLifecycleId: null,
       sidebarOpen: true,
       sidebarWidth: 252,
       mcpGuideStep: 0,
@@ -38,6 +39,7 @@ test("launcher state persists onboarding, language, and autostart atomically", (
       keepRunningOnClose: false,
       browserSmokePassed: true,
       browserSmokeVersion: "0.2.0",
+      browserSmokeLifecycleId: null,
     });
     assert.deepEqual(createStateStore(file).read(), {
       version: 1,
@@ -51,6 +53,7 @@ test("launcher state persists onboarding, language, and autostart atomically", (
       showBrowserDuringTurns: true,
       browserSmokePassed: true,
       browserSmokeVersion: "0.2.0",
+      browserSmokeLifecycleId: null,
       sidebarOpen: true,
       sidebarWidth: 252,
       mcpGuideStep: 0,
@@ -102,6 +105,7 @@ test("persisted sidebar corruption is repaired without changing the rest of laun
       showBrowserDuringTurns: true,
       browserSmokePassed: false,
       browserSmokeVersion: null,
+      browserSmokeLifecycleId: null,
       sidebarOpen: true,
       sidebarWidth: 252,
       mcpGuideStep: 0,

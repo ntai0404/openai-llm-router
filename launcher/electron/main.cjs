@@ -34,6 +34,7 @@ const {
   nextSessionRefreshReminderAt,
   validateSidebarState,
 } = require("./state.cjs");
+const { createBrowserSmokeLifecycle } = require("./browser-smoke-state.cjs");
 const {
   MIN_WINDOW_BOUNDS,
   readWindowState,
@@ -88,6 +89,7 @@ let quitting = false;
 let shutdownInProgress = false;
 let exitCommitted = false;
 let smokePassedThisSession = false;
+let browserSmokeLifecycle = null;
 let cdpPort = 0;
 let lastOperation = null;
 let catalogVerificationTimer = null;
@@ -357,7 +359,9 @@ function validateBounds(value) {
 }
 
 function smokePassedForCurrentVersion(state) {
-  return state.browserSmokePassed === true && state.browserSmokeVersion === app.getVersion();
+  return browserSmokeLifecycle
+    ? browserSmokeLifecycle.isSmokePassed(state, app.getVersion())
+    : state.browserSmokePassed === true && state.browserSmokeVersion === app.getVersion();
 }
 
 function registerIpc({ logger, stateStore }) {
@@ -412,6 +416,12 @@ function registerIpc({ logger, stateStore }) {
   handle("launcher:browser-tab-select", (_event, tabId) => browserHost.selectTab(tabId));
   handle("launcher:browser-tab-close", (_event, tabId) => browserHost.closeTab(tabId));
   handle("launcher:browser-login", async () => {
+    if (!browserHost.snapshot().authenticated) {
+      smokePassedThisSession = false;
+      const state = browserSmokeLifecycle.invalidateBrowserSmoke();
+      logger.info("browser.smoke_invalidated", { reason: "fresh-login" });
+      send("launcher:state-changed", state);
+    }
     const browser = await browserHost.openLogin();
     if (browser.authenticated) {
       const state = stateStore.update({ sessionRefreshReminderAt: nextSessionRefreshReminderAt() });
@@ -421,7 +431,11 @@ function registerIpc({ logger, stateStore }) {
   });
   handle("launcher:browser-logout", async () => {
     const browser = await browserHost.logout();
-    const state = stateStore.update({ sessionRefreshReminderAt: nextSessionRefreshReminderAt() });
+    smokePassedThisSession = false;
+    const reminderState = stateStore.update({ sessionRefreshReminderAt: nextSessionRefreshReminderAt() });
+    const state = browserSmokeLifecycle.invalidateBrowserSmoke();
+    logger.info("browser.smoke_invalidated", { reason: "logout" });
+    send("launcher:state-changed", reminderState);
     send("launcher:state-changed", state);
     return { browser, state };
   });
@@ -432,8 +446,9 @@ function registerIpc({ logger, stateStore }) {
   });
   handle("launcher:browser-smoke", async () => {
     const result = await browserHost.smokeTest();
-    stateStore.update({ browserSmokePassed: true, browserSmokeVersion: app.getVersion() });
+    const state = browserSmokeLifecycle.markSmokePassed(app.getVersion());
     smokePassedThisSession = true;
+    send("launcher:state-changed", state);
     return result;
   });
   handle("launcher:mcp-verify", async () => {
@@ -691,6 +706,8 @@ async function start() {
     filePath: path.join(app.getPath("logs"), "launcher.jsonl"),
     publish: (record) => send("launcher:log", record),
   });
+  browserSmokeLifecycle = createBrowserSmokeLifecycle(stateStore);
+  if (stateStore.read().browserSmokePassed !== true) smokePassedThisSession = false;
   const startHidden = process.argv.includes("--hidden") && stateStore.read().onboardingComplete;
   nativeTheme.themeSource = "system";
   mainWindow = createWindow({

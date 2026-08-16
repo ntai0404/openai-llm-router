@@ -301,6 +301,51 @@ test("launcher authentication requires the Temporary Chat composer and complete 
   assert.equal(result.status, "ready");
 });
 
+test("login auth probes log sanitized subconditions without session data", async () => {
+  const records = [];
+  const fixture = {
+    state: { authenticated: false },
+    activeTraceId: null,
+    manualOperation: "ChatGPT login",
+    authProbeAttempt: 0,
+    authProbeStartedAt: Date.now() - 25,
+    logAuthProbe: BrowserHost.prototype.logAuthProbe,
+    view: {
+      webContents: {
+        isDestroyed: () => false,
+        getURL: () => "https://chatgpt.com/?temporary-chat=true",
+        executeJavaScript: async () => ({
+          composer: true,
+          temporary: true,
+          isTemporaryChatUrl: true,
+          currentOrigin: "https://chatgpt.com",
+          sessionAuthenticated: false,
+          readyState: "complete",
+          sessionHttpStatus: 200,
+          sessionFailureCategory: "invalid_session",
+        }),
+      },
+    },
+    setState(patch) { this.state = { ...this.state, ...patch }; },
+    snapshot() { return { ...this.state }; },
+    logger: { info: (event, detail) => records.push({ event, detail }) },
+  };
+
+  await BrowserHost.prototype.probeAuthentication.call(fixture);
+
+  const probe = records.find(({ event }) => event === "browser.auth_probe");
+  assert.ok(probe);
+  assert.equal(probe.detail.composer, true);
+  assert.equal(probe.detail.temporary, true);
+  assert.equal(probe.detail.sessionAuthenticated, false);
+  assert.equal(probe.detail.documentReadyState, "complete");
+  assert.equal(probe.detail.currentOrigin, "https://chatgpt.com");
+  assert.equal(probe.detail.sessionFailureCategory, "invalid_session");
+  assert.equal("sessionBody" in probe.detail, false);
+  assert.equal("email" in probe.detail, false);
+  assert.equal("token" in probe.detail, false);
+});
+
 test("authentication windows stay inside the launcher-owned browser partition", () => {
   assert.equal(allowedAuthUrl("https://accounts.google.com/o/oauth2/v2/auth"), true);
   assert.equal(allowedAuthUrl("https://chatgpt.com/auth/login"), true);

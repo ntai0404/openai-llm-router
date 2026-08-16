@@ -896,6 +896,7 @@ function SetupSurface({
           complete={snapshot.state.codexCatalogVerified === true}
           description={copy.stepInstallBody}
           disabled={busy
+            || browser?.authenticated !== true
             || (!snapshot.smokePassed && snapshot.state.coreSetupComplete !== true)}
           index={3}
           onAction={install}

@@ -180,6 +180,8 @@ class BrowserHost {
     this.selectedTabId = "home";
     this.manualOperation = null;
     this.loginOperation = null;
+    this.authProbeAttempt = 0;
+    this.authProbeStartedAt = null;
     this.cloudflareChallengeRecovery = null;
     this.cloudflareChallengeRecoveryArmed = true;
     this.cloudflareChallengeRecoveryDelayMs = CLOUDFLARE_CHALLENGE_RECOVERY_DELAY_MS;
@@ -240,6 +242,32 @@ class BrowserHost {
 
   currentOperation() {
     return this.manualOperation || (this.loginOperation ? "ChatGPT login" : null);
+  }
+
+  logAuthProbe(result, fallbackUrl, surface) {
+    if (this.manualOperation !== "ChatGPT login") return;
+    this.authProbeAttempt += 1;
+    const currentOrigin = typeof result?.currentOrigin === "string"
+      ? result.currentOrigin
+      : (() => {
+          try { return new URL(fallbackUrl || "").origin; } catch { return ""; }
+        })();
+    this.logger.info("browser.auth_probe", {
+      surface,
+      probeAttempt: this.authProbeAttempt,
+      composer: result?.composer === true,
+      temporary: result?.temporary === true,
+      isTemporaryChatUrl: result?.isTemporaryChatUrl === true,
+      sessionAuthenticated: result?.sessionAuthenticated === true,
+      documentReadyState: typeof result?.readyState === "string" ? result.readyState : "unknown",
+      currentOrigin,
+      manualOperation: this.manualOperation,
+      elapsedMs: this.authProbeStartedAt === null ? 0 : Math.max(0, Date.now() - this.authProbeStartedAt),
+      ...(Number.isInteger(result?.sessionHttpStatus) ? { sessionHttpStatus: result.sessionHttpStatus } : {}),
+      ...(typeof result?.sessionFailureCategory === "string"
+        ? { sessionFailureCategory: result.sessionFailureCategory }
+        : {}),
+    });
   }
 
   get activeTraceId() {
@@ -1120,6 +1148,8 @@ class BrowserHost {
     }
     const operation = this.withManualOperation("ChatGPT login", async () => {
       this.authNavigationError = null;
+      this.authProbeAttempt = 0;
+      this.authProbeStartedAt = Date.now();
       this.show();
       this.logger.info("browser.login_opened");
       const current = this.view.webContents.getURL();
@@ -1131,6 +1161,8 @@ class BrowserHost {
     });
     const tracked = operation.finally(() => {
       if (this.loginOperation === tracked) this.loginOperation = null;
+      this.authProbeAttempt = 0;
+      this.authProbeStartedAt = null;
     });
     this.loginOperation = tracked;
     return tracked;
@@ -1173,6 +1205,15 @@ class BrowserHost {
     if (!this.view || this.view.webContents.isDestroyed()) return this.snapshot();
     let url = this.view.webContents.getURL();
     if (url === IDLE_BROWSER_URL) {
+      this.logAuthProbe?.({
+        composer: false,
+        temporary: false,
+        isTemporaryChatUrl: false,
+        sessionAuthenticated: false,
+        readyState: "idle",
+        currentOrigin: "",
+        sessionFailureCategory: "not_attempted",
+      }, url, "home");
       this.setState({
         status: this.state.authenticated ? "ready" : "signed-out",
         message: this.state.authenticated ? "No active task" : "Sign in to ChatGPT",
@@ -1181,6 +1222,15 @@ class BrowserHost {
       return this.snapshot();
     }
     if (!url.startsWith(CHATGPT_ORIGIN)) {
+      this.logAuthProbe?.({
+        composer: false,
+        temporary: false,
+        isTemporaryChatUrl: false,
+        sessionAuthenticated: false,
+        readyState: "unknown",
+        currentOrigin: (() => { try { return new URL(url).origin; } catch { return ""; } })(),
+        sessionFailureCategory: "not_chatgpt_origin",
+      }, url, "home");
       this.setState({ status: "signed-out", message: "Sign in to ChatGPT", authenticated: false, url });
       return this.snapshot();
     }
@@ -1191,15 +1241,19 @@ class BrowserHost {
         const actualUrl = new URL(location.href);
         return {
           url: actualUrl.href,
+          currentOrigin: actualUrl.origin,
           composer: Boolean(composer),
-          temporary: actualUrl.origin === expectedUrl.origin
+          isTemporaryChatUrl: actualUrl.origin === expectedUrl.origin
             && actualUrl.pathname === expectedUrl.pathname
             && actualUrl.searchParams.get("temporary-chat") === "true",
           readyState: document.readyState,
         };
       };
       const initialSurface = readSurface();
+      const temporary = initialSurface.isTemporaryChatUrl;
       let sessionAuthenticated = false;
+      let sessionHttpStatus = null;
+      let sessionFailureCategory = "not_attempted";
       if (new URL(initialSurface.url).origin === expectedUrl.origin) {
         const controller = new AbortController();
         const timeout = setTimeout(() => controller.abort(), ${CHATGPT_AUTH_SESSION_TIMEOUT_MS});
@@ -1210,48 +1264,69 @@ class BrowserHost {
             headers: { accept: "application/json" },
             signal: controller.signal,
           });
+          sessionHttpStatus = response.status;
           const responseUrl = new URL(response.url);
-          const payload = response.ok
-            && responseUrl.origin === expectedUrl.origin
-            && responseUrl.pathname === "/api/auth/session"
-            && response.headers.get("content-type")?.includes("application/json")
+          const responseIsSession = responseUrl.origin === expectedUrl.origin
+            && responseUrl.pathname === "/api/auth/session";
+          const responseIsJson = response.headers.get("content-type")?.includes("application/json");
+          const payload = response.ok && responseIsSession && responseIsJson
             ? await response.json()
             : null;
-          const user = payload?.user && typeof payload.user === "object" && !Array.isArray(payload.user)
-            ? payload.user
-            : null;
-          const sessionHasUser = user !== null && Object.keys(user).length > 0;
-          const sessionHasNoError = payload?.error === undefined || payload.error === null || payload.error === "";
-          const sessionExpiryIsValid = payload?.expires === undefined || payload.expires === null
-            ? true
-            : typeof payload.expires === "string"
-              && Number.isFinite(Date.parse(payload.expires))
-              && Date.parse(payload.expires) > Date.now();
-          sessionAuthenticated = sessionHasUser
-            && sessionHasNoError
-            && sessionExpiryIsValid;
-        } catch {}
+          if (!response.ok) {
+            sessionFailureCategory = "http_status";
+          } else if (!responseIsSession || !responseIsJson || payload === null) {
+            sessionFailureCategory = "invalid_session";
+          } else {
+            const user = payload?.user && typeof payload.user === "object" && !Array.isArray(payload.user)
+              ? payload.user
+              : null;
+            const sessionHasUser = user !== null && Object.keys(user).length > 0;
+            const sessionHasNoError = payload?.error === undefined || payload.error === null || payload.error === "";
+            const sessionExpiryIsValid = payload?.expires === undefined || payload.expires === null
+              ? true
+              : typeof payload.expires === "string"
+                && Number.isFinite(Date.parse(payload.expires))
+                && Date.parse(payload.expires) > Date.now();
+            if (sessionHasUser && !sessionHasNoError) sessionFailureCategory = "invalid_session";
+            else if (sessionHasUser && !sessionExpiryIsValid) sessionFailureCategory = "expired_session";
+            else if (!sessionHasUser) sessionFailureCategory = "invalid_session";
+            else if (sessionHasNoError && sessionExpiryIsValid) {
+              sessionAuthenticated = true;
+              sessionFailureCategory = "ok";
+            }
+          }
+        } catch (error) {
+          sessionFailureCategory = error?.name === "AbortError"
+            ? "timeout"
+            : "fetch_error:" + (error?.name || "unknown");
+        }
         finally { clearTimeout(timeout); }
       }
-      return { ...readSurface(), sessionAuthenticated };
-    })()`, true).catch(() => ({
+      return { ...readSurface(), temporary, sessionAuthenticated, sessionHttpStatus, sessionFailureCategory };
+    })()`, true).catch((error) => ({
       url: "",
+      currentOrigin: "",
       composer: false,
       temporary: false,
+      isTemporaryChatUrl: false,
       sessionAuthenticated: false,
       readyState: "unknown",
+      sessionFailureCategory: `probe_error:${error?.name || "unknown"}`,
     }));
     let result = await probe(this.view.webContents);
+    this.logAuthProbe?.(result, url, "home");
     if (!(result.composer && result.temporary && result.sessionAuthenticated)
       && this.authView
       && !this.authView.webContents.isDestroyed()) {
       const authResult = await probe(this.authView.webContents);
+      this.logAuthProbe?.(authResult, this.authView.webContents.getURL(), "auth");
       if (authResult.sessionAuthenticated) {
         const completedAuthView = this.authView;
         this.closeAuthView(completedAuthView, true, false);
         await this.view.webContents.loadURL(TEMPORARY_CHAT_URL);
         url = this.view.webContents.getURL();
         result = await probe(this.view.webContents);
+        this.logAuthProbe?.(result, url, "home-after-auth");
       }
     }
     if (result.composer && result.temporary && result.sessionAuthenticated) {

@@ -16,6 +16,7 @@ const DEFAULT_STATE = Object.freeze({
   showBrowserDuringTurns: true,
   browserSmokePassed: false,
   browserSmokeVersion: null,
+  browserSmokeLifecycleId: null,
   sidebarOpen: true,
   sidebarWidth: 252,
   mcpGuideStep: 0,
@@ -51,6 +52,10 @@ function readState(filePath) {
     if (state.browserSmokeVersion !== null
       && (typeof state.browserSmokeVersion !== "string" || state.browserSmokeVersion.length > 128)) {
       state.browserSmokeVersion = DEFAULT_STATE.browserSmokeVersion;
+    }
+    if (state.browserSmokeLifecycleId !== null
+      && (typeof state.browserSmokeLifecycleId !== "string" || state.browserSmokeLifecycleId.length > 128)) {
+      state.browserSmokeLifecycleId = DEFAULT_STATE.browserSmokeLifecycleId;
     }
     if (!Number.isFinite(state.sidebarWidth)
       || state.sidebarWidth < SIDEBAR_MIN_WIDTH

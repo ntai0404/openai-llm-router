@@ -89,10 +89,26 @@ test("completed model setup remains a repeatable capability probe", () => {
   );
 });
 
+test("Install models stays disabled until the browser is authenticated", () => {
+  assert.match(
+    appSource,
+    /disabled=\{busy[\s\S]*?browser\?\.authenticated !== true[\s\S]*?snapshot\.smokePassed/,
+  );
+});
+
 test("session reminders expose dismissal and a real storage-clearing logout", () => {
   assert.match(electronMain, /sessionRefreshReminderAt:\s*nextSessionRefreshReminderAt\(\)/);
   assert.match(electronMain, /launcher:session-reminder-dismiss/);
   assert.match(electronMain, /launcher:browser-logout[\s\S]*?browserHost\.logout\(\)/);
+  const logoutStart = electronMain.indexOf('handle("launcher:browser-logout"');
+  const logoutEnd = electronMain.indexOf('handle("launcher:session-reminder-dismiss"', logoutStart);
+  const logoutHandler = electronMain.slice(logoutStart, logoutEnd);
+  assert.match(logoutHandler, /smokePassedThisSession = false/);
+  assert.match(logoutHandler, /browserSmokeLifecycle\.invalidateBrowserSmoke\(\)/);
+  const loginStart = electronMain.indexOf('handle("launcher:browser-login"');
+  const loginEnd = electronMain.indexOf('handle("launcher:browser-logout"', loginStart);
+  const loginHandler = electronMain.slice(loginStart, loginEnd);
+  assert.match(loginHandler, /browserSmokeLifecycle\.invalidateBrowserSmoke\(\)/);
   assert.match(preloadSource, /dismissSessionReminder:[\s\S]*?launcher:session-reminder-dismiss/);
   assert.match(preloadSource, /logoutChatGpt:[\s\S]*?launcher:browser-logout/);
   assert.match(browserHostSource, /session\.clearStorageData\(\)/);
