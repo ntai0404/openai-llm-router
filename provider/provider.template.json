@@ -1,0 +1,18 @@
+﻿{
+    "provider_id":  "chatgpt-web-local",
+    "base_url":  "http://127.0.0.1:8788/v1",
+    "protocol":  "responses",
+    "credential_env":  "ROUTER_API_KEY",
+    "stream_timeout_ms":  300000,
+    "capabilities":  {
+                         "responses":  true,
+                         "streaming":  true,
+                         "function_tools":  true,
+                         "function_call_output":  true,
+                         "data_url_images":  true,
+                         "remote_image_url":  false,
+                         "image_file_id":  false,
+                         "generic_input_file":  false,
+                         "native_non_function_tools":  false
+                     }
+}
