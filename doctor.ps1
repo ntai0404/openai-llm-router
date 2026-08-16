@@ -1,4 +1,4 @@
-﻿$ErrorActionPreference="Stop"
+$ErrorActionPreference="Stop"
 . "$PSScriptRoot\scripts\router-common.ps1"
 Ensure-RouterState
 $compat=[ordered]@{status="FAIL";checked_at=(Get-Date).ToString("o");failure_layer=$null}
@@ -50,3 +50,12 @@ $compat.responses_non_stream=$true;$compat.sse=$true;$compat.function_tools=$tru
 Write-Host ""
 Write-Host "READY"
 
+# ROUTER_DOCTOR_PROTOCOL_V1
+$protocolHealth = try { Get-RouterHealth } catch { $null }
+$protocolCheck = Test-RouterProtocolCompatibility -Health $protocolHealth
+if (-not $protocolCheck.Compatible) {
+  Save-Compat "FAIL" "Protocol compatibility"
+  throw ("Protocol compatibility: " + $protocolCheck.Message)
+}
+Write-Host (("Protocol compatibility").PadRight(23) + "PASS")
+Save-Compat "PASS" "Protocol compatibility"
