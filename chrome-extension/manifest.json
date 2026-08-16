@@ -2,7 +2,7 @@
     "manifest_version":  3,
     "minimum_chrome_version":  "116",
     "name":  "ChatGPT Auto Temporary Router",
-    "version": "1.10.8",
+    "version": "1.10.10",
     "description": "ChatGPT worker router with persistent background worker, Responses API images, and function tools.",
     "permissions":  [
                         "tabs",

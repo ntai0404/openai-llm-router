@@ -45,6 +45,16 @@ function renderItems(
             item
           );
         }
+        if (
+          item.kind ===
+          "function_call"
+        ) {
+          return [
+            `[function_call call_id=${item.call_id} name=${item.name}]`,
+            item.arguments
+          ].join("\n");
+        }
+
 
         if (
           item.kind ===

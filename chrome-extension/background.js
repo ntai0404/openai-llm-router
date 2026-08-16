@@ -11,6 +11,7 @@ let keepAliveTimer = null;
 let idleCloseTimer = null;
 
 let workerTabId = null;
+let workerWindowId = null;
 let workerBusy = false;
 let returnTabId = null;
 
@@ -538,20 +539,282 @@ async function reportJobError(
   } catch {}
 }
 
+async function ensureDedicatedWorkerWindow(
+  tab
+) {
+  if (!tab?.id) {
+    throw new Error(
+      "Worker tab is unavailable."
+    );
+  }
+
+  let current =
+    await chrome.tabs.get(
+      tab.id
+    );
+
+  /*
+    workerWindowId is the only authority for whether
+    a Chrome window belongs to the router.
+
+    Never infer ownership merely because a window
+    happens to contain one tab.
+  */
+  const stored =
+    await chrome.storage.local.get({
+      workerWindowId:
+        null
+    });
+
+  if (!workerWindowId) {
+    workerWindowId =
+      stored.workerWindowId ??
+      null;
+  }
+
+  /*
+    Validate persisted router-owned window.
+  */
+  if (workerWindowId) {
+    const existingWindow =
+      await chrome.windows
+        .get(
+          workerWindowId
+        )
+        .catch(() => null);
+
+    if (!existingWindow) {
+      workerWindowId =
+        null;
+
+      await chrome.storage.local.remove(
+        "workerWindowId"
+      );
+    }
+  }
+
+  /*
+    Reuse only when:
+      1. this exact window ID was stored by router;
+      2. current worker tab belongs to it;
+      3. it contains only this worker tab.
+  */
+  if (
+    workerWindowId &&
+    current.windowId ===
+      workerWindowId
+  ) {
+    const ownedTabs =
+      await chrome.tabs.query({
+        windowId:
+          workerWindowId
+      });
+
+    if (
+      ownedTabs.length === 1 &&
+      ownedTabs[0]?.id ===
+        current.id
+    ) {
+      current =
+        await chrome.tabs.update(
+          current.id,
+          {
+            active:
+              true,
+
+            autoDiscardable:
+              false,
+
+            pinned:
+              false
+          }
+        );
+
+      console.log(
+        "[Router] reuse router-owned worker window",
+        {
+          tabId:
+            current.id,
+
+          windowId:
+            current.windowId
+        }
+      );
+
+      return current;
+    }
+
+    /*
+      Window is no longer dedicated.
+      Forget ownership and create a new one.
+    */
+    workerWindowId =
+      null;
+
+    await chrome.storage.local.remove(
+      "workerWindowId"
+    );
+  }
+
+  /*
+    Current worker is in a user/unknown window.
+
+    Move this exact tab into a new router-owned
+    unfocused Chrome window.
+  */
+  const createdWindow =
+    await chrome.windows.create({
+      tabId:
+        current.id,
+
+      focused:
+        false,
+
+      type:
+        "normal"
+    });
+
+  if (!createdWindow?.id) {
+    throw new Error(
+      "Unable to create router-owned worker window."
+    );
+  }
+
+  workerWindowId =
+    createdWindow.id;
+
+  await chrome.storage.local.set({
+    workerWindowId
+  });
+
+  await sleep(300);
+
+  current =
+    await chrome.tabs.get(
+      current.id
+    );
+
+  current =
+    await chrome.tabs.update(
+      current.id,
+      {
+        active:
+          true,
+
+        autoDiscardable:
+          false,
+
+        pinned:
+          false
+      }
+    );
+
+  const verifiedWindow =
+    await chrome.windows
+      .get(
+        current.windowId
+      )
+      .catch(() => null);
+
+  const verifiedTabs =
+    await chrome.tabs.query({
+      windowId:
+        current.windowId
+    });
+
+  if (
+    current.windowId !==
+      workerWindowId
+  ) {
+    throw new Error(
+      "Worker tab is not inside the router-owned window."
+    );
+  }
+
+  if (
+    verifiedTabs.length !== 1 ||
+    verifiedTabs[0]?.id !==
+      current.id
+  ) {
+    throw new Error(
+      "Router-owned worker window is not dedicated."
+    );
+  }
+
+  if (
+    !current.active ||
+    current.discarded
+  ) {
+    throw new Error(
+      "Router-owned worker tab is not active and loaded."
+    );
+  }
+
+  console.log(
+    "[Router] created router-owned worker window",
+    {
+      tabId:
+        current.id,
+
+      windowId:
+        current.windowId,
+
+      storedWindowId:
+        workerWindowId,
+
+      active:
+        current.active,
+
+      discarded:
+        current.discarded,
+
+      autoDiscardable:
+        current.autoDiscardable,
+
+      focused:
+        verifiedWindow?.focused ??
+        null
+    }
+  );
+
+  return current;
+}
 async function runBrowserJob(job) {
-  await chrome.alarms.clear(IDLE_ALARM).catch(() => {});
+  await chrome.alarms
+    .clear(IDLE_ALARM)
+    .catch(() => {});
 
-  const tab = await ensureWorkerTab();
+  /*
+    ensureWorkerTab keeps all existing reconciliation
+    and discarded-worker recovery behavior from Phase 5.
+  */
+  let tab =
+    await ensureWorkerTab();
 
+  /*
+    Record the user's foreground tab BEFORE creating or
+    activating the dedicated worker window.
+  */
   await rememberCurrentTab();
+
+  /*
+    This is the only behavioral change in this patch:
+    host the worker as the active tab of its own window.
+  */
+  tab =
+    await ensureDedicatedWorkerWindow(
+      tab
+    );
 
   const url =
     TEMP_BASE +
     "&router-run=" +
-    encodeURIComponent(job.id);
+    encodeURIComponent(
+      job.id
+    );
 
   console.log(
-    "[Router] reuse background worker",
+    "[Router] run dedicated worker",
     tab.id,
     "job",
     job.id
@@ -561,19 +824,84 @@ async function runBrowserJob(job) {
     tab.id,
     {
       url,
-      active: false,
+      active: true,
+      autoDiscardable: false,
       pinned: false
     }
   );
 
-  await waitForTabComplete(tab.id);
+  const beforeLoad =
+    await chrome.tabs.get(
+      tab.id
+    );
+
+  const workerWindow =
+    await chrome.windows
+      .get(
+        beforeLoad.windowId
+      )
+      .catch(() => null);
+
+  console.log(
+    "[Router] worker execution state",
+    {
+      tabId:
+        beforeLoad.id,
+
+      windowId:
+        beforeLoad.windowId,
+
+      active:
+        beforeLoad.active,
+
+      discarded:
+        beforeLoad.discarded,
+
+      autoDiscardable:
+        beforeLoad.autoDiscardable,
+
+      windowFocused:
+        workerWindow?.focused ??
+        null
+    }
+  );
+
+  if (
+    !beforeLoad.active ||
+    beforeLoad.discarded
+  ) {
+    throw new Error(
+      "Dedicated worker is not active and loaded."
+    );
+  }
+
+  await waitForTabComplete(
+    tab.id
+  );
+
   await sleep(500);
+
+  const afterLoad =
+    await chrome.tabs.get(
+      tab.id
+    );
+
+  if (
+    !afterLoad.active ||
+    afterLoad.discarded
+  ) {
+    throw new Error(
+      "Dedicated worker lost active state before job dispatch."
+    );
+  }
 
   const accepted =
     await sendToWorker(
       tab.id,
       {
-        type: "RUN_JOB",
+        type:
+          "RUN_JOB",
+
         job
       }
     );
@@ -585,7 +913,6 @@ async function runBrowserJob(job) {
     );
   }
 }
-
 async function pumpQueue() {
   if (
     workerBusy ||

@@ -261,6 +261,76 @@ function normalizeMessage(
   };
 }
 
+
+function normalizeFunctionCall(
+  item,
+  index
+) {
+  const param =
+    `input[${index}]`;
+
+  const callId =
+    requireString(
+      item.call_id,
+      `${param}.call_id`
+    );
+
+  const name =
+    requireString(
+      item.name,
+      `${param}.name`
+    );
+
+  const argumentsText =
+    requireString(
+      item.arguments,
+      `${param}.arguments`
+    );
+
+  let id = null;
+
+  if (
+    item.id !== undefined &&
+    item.id !== null
+  ) {
+    id =
+      requireString(
+        item.id,
+        `${param}.id`
+      );
+  }
+
+  let status = null;
+
+  if (
+    item.status !== undefined &&
+    item.status !== null
+  ) {
+    status =
+      requireString(
+        item.status,
+        `${param}.status`
+      );
+  }
+
+  return {
+    kind:
+      "function_call",
+
+    id,
+
+    call_id:
+      callId,
+
+    name,
+
+    arguments:
+      argumentsText,
+
+    status
+  };
+}
+
 function normalizeFunctionCallOutput(
   item,
   index
@@ -346,6 +416,16 @@ function normalizeInput(input) {
           `input[${index}]`
         );
       }
+      if (
+        item.type ===
+        "function_call"
+      ) {
+        return normalizeFunctionCall(
+          item,
+          index
+        );
+      }
+
 
       if (
         item.type ===
