@@ -1,4 +1,4 @@
-﻿import assert from "node:assert/strict";
+import assert from "node:assert/strict";
 import http from "node:http";
 import test from "node:test";
 
@@ -608,60 +608,6 @@ test(
         assert.equal(
           body.error.code,
           "unsupported_content_type"
-        );
-      }
-    );
-  }
-);
-
-test(
-  "Phase 1 reports stream=true explicitly instead of crashing",
-  async () => {
-    await withServer(
-      responsesServer({
-        apiKey:
-          "secret"
-      }),
-
-      async baseUrl => {
-        const response =
-          await fetch(
-            `${baseUrl}/v1/responses`,
-            {
-              method:
-                "POST",
-
-              headers: {
-                authorization:
-                  "Bearer secret",
-
-                "content-type":
-                  "application/json"
-              },
-
-              body:
-                JSON.stringify({
-                  model:
-                    "gpt-test",
-                  input:
-                    "hello",
-                  stream:
-                    true
-                })
-            }
-          );
-
-        const body =
-          await response.json();
-
-        assert.equal(
-          response.status,
-          400
-        );
-
-        assert.equal(
-          body.error.code,
-          "streaming_not_implemented"
         );
       }
     );

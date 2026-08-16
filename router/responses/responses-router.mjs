@@ -1,4 +1,4 @@
-﻿import {
+import {
   assertBearerAuth
 } from "./auth-middleware.mjs";
 
@@ -20,6 +20,10 @@ import {
   encodeCompletedResponse
 } from "./response-encoder.mjs";
 
+import {
+  streamResponse
+} from "./sse-encoder.mjs";
+
 const MAX_BODY_BYTES =
   10 * 1024 * 1024;
 
@@ -37,15 +41,10 @@ function writeJson(
     {
       "content-type":
         "application/json; charset=utf-8",
-
       "content-length":
-        Buffer.byteLength(
-          encoded
-        ),
-
+        Buffer.byteLength(encoded),
       "access-control-allow-origin":
         "*",
-
       ...extraHeaders
     }
   );
@@ -57,15 +56,10 @@ async function readJson(req) {
   const chunks = [];
   let size = 0;
 
-  for await (
-    const chunk of req
-  ) {
+  for await (const chunk of req) {
     size += chunk.length;
 
-    if (
-      size >
-      MAX_BODY_BYTES
-    ) {
+    if (size > MAX_BODY_BYTES) {
       throw invalidRequest(
         "Request body is too large.",
         null,
@@ -100,22 +94,19 @@ async function readJson(req) {
 
 function isJsonContentType(req) {
   const value =
-    req.headers?.[
-      "content-type"
-    ];
+    req.headers?.["content-type"];
 
-  if (
-    typeof value !==
-      "string"
-  ) {
+  if (typeof value !== "string") {
     return false;
   }
 
-  return value
-    .split(";", 1)[0]
-    .trim()
-    .toLowerCase() ===
-    "application/json";
+  return (
+    value
+      .split(";", 1)[0]
+      .trim()
+      .toLowerCase() ===
+    "application/json"
+  );
 }
 
 export async function handleResponsesRoute(
@@ -123,8 +114,7 @@ export async function handleResponsesRoute(
   res,
   {
     apiKey =
-      process.env
-        .ROUTER_API_KEY,
+      process.env.ROUTER_API_KEY,
 
     execute =
       executeNormalizedRequest
@@ -136,22 +126,12 @@ export async function handleResponsesRoute(
       "http://127.0.0.1"
     ).pathname;
 
-  if (
-    pathname !==
-    "/v1/responses"
-  ) {
-    /*
-      Returning false is intentional:
-      legacy bridge routes continue
-      through their existing handler.
-    */
+  if (pathname !== "/v1/responses") {
     return false;
   }
 
   try {
-    if (
-      req.method !== "POST"
-    ) {
+    if (req.method !== "POST") {
       throw invalidRequest(
         "Only POST is supported for /v1/responses.",
         null,
@@ -164,9 +144,7 @@ export async function handleResponsesRoute(
       { apiKey }
     );
 
-    if (
-      !isJsonContentType(req)
-    ) {
+    if (!isJsonContentType(req)) {
       throw unsupportedContentType();
     }
 
@@ -174,28 +152,20 @@ export async function handleResponsesRoute(
       await readJson(req);
 
     const normalized =
-      normalizeResponsesRequest(
-        body
+      normalizeResponsesRequest(body);
+
+    if (normalized.stream) {
+      await streamResponse(
+        res,
+        normalized,
+        execute
       );
 
-    /*
-      Phase 1 is intentionally
-      non-stream only.
-      Phase 2 will replace this with
-      the SSE encoder.
-    */
-    if (normalized.stream) {
-      throw invalidRequest(
-        "stream=true is reserved for Phase 2 and is not enabled yet.",
-        "stream",
-        "streaming_not_implemented"
-      );
+      return true;
     }
 
     const executionResult =
-      await execute(
-        normalized
-      );
+      await execute(normalized);
 
     const response =
       encodeCompletedResponse(
@@ -209,6 +179,14 @@ export async function handleResponsesRoute(
       response
     );
   } catch (error) {
+    if (res.headersSent) {
+      try {
+        res.end();
+      } catch {}
+
+      return true;
+    }
+
     const mapped =
       mapError(error);
 

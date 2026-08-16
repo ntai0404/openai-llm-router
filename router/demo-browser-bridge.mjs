@@ -22,7 +22,7 @@ function json(res, status, value) {
     "content-length": Buffer.byteLength(body),
     "access-control-allow-origin": "*",
     "access-control-allow-headers":
-      "content-type,x-router-job-token",
+      "content-type,x-router-job-token,authorization",
     "access-control-allow-methods":
       "GET,POST,OPTIONS"
   });
@@ -243,7 +243,7 @@ const server =
         res.writeHead(204, {
           "access-control-allow-origin": "*",
           "access-control-allow-headers":
-            "content-type,x-router-job-token",
+            "content-type,x-router-job-token,authorization",
           "access-control-allow-methods":
             "GET,POST,OPTIONS"
         });
