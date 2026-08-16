@@ -449,6 +449,15 @@ function connectSocket() {
   }
 
   socket.onopen = () => {
+    /* ROUTER_HEALTH_HANDSHAKE_V1 */
+    socket.send(
+      JSON.stringify({
+        type: "router_extension_hello",
+        extension_version:
+          chrome.runtime.getManifest().version,
+        protocol_version: "responses-v1"
+      })
+    );
     console.log(
       "[Router] bridge connected"
     );

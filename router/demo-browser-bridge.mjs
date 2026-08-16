@@ -8,10 +8,14 @@ try { process.loadEnvFile?.(); } catch {}
 const HOST = "127.0.0.1";
 const PORT = 8788;
 const RUN_TIMEOUT_MS = 300000;
+const ROUTER_VERSION = "1.0.0";
+const PROTOCOL_VERSION = "responses-v1";
+/* ROUTER_HEALTH_METADATA_V1 */
 
 const jobs = new Map();
 
 let extensionSocket = null;
+let extensionInfo = null;
 let activeJobId = null;
 
 function json(res, status, value) {
@@ -269,6 +273,22 @@ const server =
           ok: true,
           service:
             "chatgpt-browser-demo-bridge",
+          router_version:
+            ROUTER_VERSION,
+          protocol_version:
+            PROTOCOL_VERSION,
+          extension_version:
+            extensionSocket?.readyState === WebSocket.OPEN
+              ? extensionInfo?.version ?? null
+              : null,
+          extension_protocol_version:
+            extensionSocket?.readyState === WebSocket.OPEN
+              ? extensionInfo?.protocol_version ?? null
+              : null,
+          protocol_compatible:
+            extensionSocket?.readyState === WebSocket.OPEN &&
+            extensionInfo?.protocol_version ===
+              PROTOCOL_VERSION,
           port: PORT,
           extension_connected:
             !!extensionSocket &&
@@ -660,6 +680,47 @@ wss.on(
     }
 
     extensionSocket = socket;
+    extensionInfo = null;
+
+    socket.on(
+      "message",
+      raw => {
+        let message;
+
+        try {
+          message = JSON.parse(
+            String(raw)
+          );
+        } catch {
+          return;
+        }
+
+        if (
+          message?.type !==
+            "router_extension_hello"
+        ) {
+          return;
+        }
+
+        extensionInfo = {
+          version:
+            typeof message.extension_version ===
+              "string"
+              ? message.extension_version
+              : null,
+          protocol_version:
+            typeof message.protocol_version ===
+              "string"
+              ? message.protocol_version
+              : null
+        };
+
+        console.log(
+          "Chrome extension metadata",
+          extensionInfo
+        );
+      }
+    );
 
     console.log(
       "Chrome extension connected"
