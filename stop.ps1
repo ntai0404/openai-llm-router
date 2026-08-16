@@ -1,13 +1,65 @@
-﻿$ErrorActionPreference="Stop"
+param()
+$ErrorActionPreference = "Stop"
 . "$PSScriptRoot\scripts\router-common.ps1"
-$targets=@()
-$pidValue=$null
-if(Test-Path $script:PidPath){ $raw=(Get-Content $script:PidPath -Raw).Trim(); $n=0; if([int]::TryParse($raw,[ref]$n)){ $pidValue=$n } }
-if($pidValue){ $p=Get-CimInstance Win32_Process -Filter "ProcessId=$pidValue" -ErrorAction SilentlyContinue; if($p -and $p.Name -eq "node.exe" -and $p.CommandLine -match "demo-browser-bridge\.mjs"){ $targets+= $p } }
-if($targets.Count -eq 0){ try { $listener=Get-NetTCPConnection -LocalPort 8788 -State Listen -ErrorAction Stop | Select-Object -First 1; $p=Get-CimInstance Win32_Process -Filter ("ProcessId="+$listener.OwningProcess) -ErrorAction SilentlyContinue; if($p -and $p.Name -eq "node.exe" -and $p.CommandLine -match "demo-browser-bridge\.mjs"){ $targets+= $p } elseif($listener){ throw ("Port 8788 belongs to unrelated PID "+$listener.OwningProcess) } } catch { if($_.Exception.Message -like "Port 8788 belongs*"){ throw } } }
-foreach($p in ($targets | Sort-Object ProcessId -Unique)){ Stop-Process -Id $p.ProcessId -Force -ErrorAction Stop; Write-Host ("Stopped router PID "+$p.ProcessId) }
-Remove-Item $script:PidPath -Force -ErrorAction SilentlyContinue
-Start-Sleep -Milliseconds 300
-$h=Get-RouterHealth
-if($h){ throw "Router endpoint is still reachable after stop." }
-if($targets.Count -eq 0){ Write-Host "ROUTER STOP  PASS (already stopped)" } else { Write-Host "ROUTER STOP  PASS" }
+
+function Test-Health {
+  try { return $null -ne (Get-RouterHealth) } catch { return $false }
+}
+
+function Get-ListenerPids {
+  return @(Get-NetTCPConnection -State Listen -LocalPort 8788 -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess -Unique)
+}
+
+function Get-BridgeProcess([int]$ProcessId) {
+  if ($ProcessId -le 0) { return $null }
+  $p = Get-CimInstance Win32_Process -Filter "ProcessId=$ProcessId" -ErrorAction SilentlyContinue
+  if (-not $p) { return $null }
+  $cmd = ([string]$p.CommandLine).Replace("\","/").ToLowerInvariant()
+  $bridge = ([string]$BridgePath).Replace("\","/").ToLowerInvariant()
+  $leaf = (Split-Path $BridgePath -Leaf).ToLowerInvariant()
+  if ($cmd.Contains($bridge) -or $cmd.Contains($leaf)) { return $p }
+  return $null
+}
+
+Ensure-RouterState
+
+$targets = New-Object System.Collections.Generic.HashSet[int]
+
+if (Test-Path $PidPath) {
+  $raw = (Get-Content $PidPath -Raw -ErrorAction SilentlyContinue).Trim()
+  $managed = 0
+  if ([int]::TryParse($raw,[ref]$managed)) {
+    if (Get-BridgeProcess $managed) { [void]$targets.Add($managed) }
+  }
+}
+
+foreach ($listenerPid in (Get-ListenerPids)) {
+  $bridgeProc = Get-BridgeProcess ([int]$listenerPid)
+  if ($bridgeProc) {
+    [void]$targets.Add([int]$listenerPid)
+  } else {
+    throw "Port 8788 is owned by unrelated PID $listenerPid; refusing to stop it."
+  }
+}
+
+if ($targets.Count -eq 0) {
+  Remove-Item $PidPath -Force -ErrorAction SilentlyContinue
+  if (Test-Health) { throw "Router health is reachable but no verified bridge process owns port 8788." }
+  Write-Host "ROUTER STOP  PASS (already stopped)"
+  exit 0
+}
+
+foreach ($targetPid in $targets) {
+  Write-Host "Stopping verified router PID $targetPid"
+  Stop-Process -Id $targetPid -Force -ErrorAction Stop
+}
+
+for ($i=0; $i -lt 20; $i++) {
+  if (-not (Test-Health)) { break }
+  Start-Sleep -Milliseconds 500
+}
+
+if (Test-Health) { throw "Router is still reachable after stopping verified process." }
+
+Remove-Item $PidPath -Force -ErrorAction SilentlyContinue
+Write-Host "ROUTER STOP  PASS"
